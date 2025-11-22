@@ -1,0 +1,23 @@
+# Progress Log
+
+- [x] Step 1: Introduced CLI/config loading, base-directory resolution, and safe overwrite switches.
+- [x] Step 2: Added per-doc schema validation and config key verification.
+- [x] Step 3: Hardened Markdown export with slug truncation and collision-safe filenames.
+- [x] Step 4: Rebuilt SQLite pipeline with FK integrity, deduped extras, and overwrite guards.
+- [x] Step 5: Replaced ad-hoc prints with structured logging across the workflow.
+- [x] Step 6: Added pytest coverage for ID helpers, SRS normalization, Markdown export, and SQLite trace wiring.
+- [x] Step 7: Implement YAML-driven doc schema ingestion, section inference, and output enhancements per architecture plan.
+  - [x] Added schema datamodel, CLI flag, and YAML loader with fallback defaults.
+  - [x] Propagated schema version metadata into Markdown and SQLite outputs.
+  - [x] Added section/object inference leveraging DocSpec rules with unit tests.
+- [x] Step 8: Documented refactor architecture, created mermaid diagrams, and logged upcoming YAML tasks.
+- [x] Step 9: Stabilized ID normalization and inference column mapping ahead of release hardening.
+  - [x] Uppercased normalized prefixes/suffixes so cross-doc traces dedupe correctly.
+  - [x] Bound inference writes to underscore-style keys when schema columns include spaces.
+  - [x] Confirmed full pytest suite passes (7 tests).
+- [x] Step 10: Authored user-facing README and diagram suite.
+  - [x] Added comprehensive README with minimal/extensive config walkthroughs.
+  - [x] Documented activity, BDD, and sequence diagrams with selection guidance.
+- [x] Step 11: Added optional For_RAG export pipeline.
+  - [x] Introduced CLI flag and plain-text export helper for RAG ingest.
+  - [x] Documented new outputs, diagrams, and regression tests.
