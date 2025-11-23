@@ -2356,11 +2356,7 @@ def normalize_one(
 
     if detected_kind and detected_kind != spec.doc_type and detected_kind not in spec.aliases:
         logging.warning(
-            "Document kind detection mismatch for %s (%s): detected %s, using %s",
-            doc_name,
-            doc_type,
-            detected_kind,
-            spec.doc_type,
+            f"Document kind detection mismatch for {doc_name} ({doc_type}): detected {detected_kind}, using {spec.doc_type}",
             extra={
                 "doc_name": doc_name,
                 "declared_doc_type": doc_type,
@@ -2400,8 +2396,7 @@ def load_and_normalize_all(
     all_frames: List[pd.DataFrame] = []
 
     logging.info(
-        "Loading %d configured documents with schema",
-        len(config),
+        f"Loading {len(config)} configured documents with schema version {schema.version} from {base_dir.resolve()}",
         extra={
             "schema_version": schema.version,
             "doc_types": schema.available_types(),
@@ -2425,9 +2420,7 @@ def load_and_normalize_all(
 
         if not source_path.exists():
             logging.warning(
-                "Input file missing for document %s (%s) – skipping",
-                doc_name,
-                doc_type,
+                f"Input file missing for document {doc_name} ({doc_type}) at {source_path} – skipping",
                 extra={
                     "path": str(source_path),
                     "doc_name": doc_name,
@@ -2438,10 +2431,7 @@ def load_and_normalize_all(
             continue
 
         logging.info(
-            "Loading spreadsheet for document %s (%s) from %s",
-            doc_name,
-            doc_type,
-            str(source_path),
+            f"Loading spreadsheet for document {doc_name} ({doc_type}) from {source_path}",
             extra={
                 "path": str(source_path),
                 "doc_name": doc_name,
@@ -2455,11 +2445,7 @@ def load_and_normalize_all(
             raise RuntimeError(f"Failed to read Excel export at {source_path}") from exc
 
         logging.info(
-            "Loaded %d rows and %d columns for document %s (%s)",
-            len(df_raw),
-            df_raw.shape[1],
-            doc_name,
-            doc_type,
+            f"Loaded {len(df_raw)} rows and {df_raw.shape[1]} columns for document {doc_name} ({doc_type})",
             extra={
                 "rows": len(df_raw),
                 "columns": list(df_raw.columns),
@@ -2472,9 +2458,7 @@ def load_and_normalize_all(
         df_norm = normalize_one(df_raw, doc_name, doc_type, level, schema)
         if df_norm.empty:
             logging.warning(
-                "Normalizer produced zero rows for document %s (%s)",
-                doc_name,
-                doc_type,
+                f"Normalizer produced zero rows for document {doc_name} ({doc_type})",
                 extra={
                     "path": str(source_path),
                     "doc_name": doc_name,
@@ -2485,10 +2469,7 @@ def load_and_normalize_all(
             )
         else:
             logging.info(
-                "Normalized %s (%s) into %d records",
-                doc_name,
-                doc_type,
-                len(df_norm),
+                f"Normalized {doc_name} ({doc_type}) into {len(df_norm)} records",
                 extra={
                     "rows": len(df_norm),
                     "doc_name": doc_name,
@@ -2503,9 +2484,7 @@ def load_and_normalize_all(
 
     df_all = pd.concat(all_frames, ignore_index=True)
     logging.info(
-        "Combined normalized dataframe with %d total rows across %d documents",
-        len(df_all),
-        len(all_frames),
+        f"Combined normalized dataframe with {len(df_all)} total rows across {len(all_frames)} documents",
         extra={"rows": len(df_all), "document_frames": len(all_frames)},
     )
 
