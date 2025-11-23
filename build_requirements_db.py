@@ -760,7 +760,17 @@ def make_srs_req_id(section: str, req_no: str) -> str:
 # SECTION CONTEXT HELPERS
 ########################
 
-HEADER_TYPES = set(DEFAULT_HEADER_TYPES)
+HEADER_TYPES = set(h.lower() for h in DEFAULT_HEADER_TYPES)
+HEADER_KEYWORDS = {
+    "header",
+    "heading",
+    "section header",
+    "section heading",
+    "section title",
+    "chapter header",
+    "chapter heading",
+}
+SECTION_TITLE_EXCLUDES = {"ole"}
 
 
 def update_section_context(
@@ -784,9 +794,10 @@ def update_section_context(
 
     Returns True if this row is a header (caller should typically `continue`).
     """
-    req_type = str(row.get(type_column, "")).strip().lower()
+    req_type_raw = str(row.get(type_column, "")).strip()
+    req_type = req_type_raw.lower()
     object_number = str(row.get(object_number_col, "")).strip() if object_number_col in row.index else ""
-    is_header_type = req_type in HEADER_TYPES
+    is_header_type = req_type in HEADER_TYPES or any(keyword in req_type for keyword in HEADER_KEYWORDS)
 
     # Find the first non-empty requirement text cell we can treat as the "section title"
     header_text = ""
@@ -800,10 +811,64 @@ def update_section_context(
     if is_header_type and header_text and not object_number:
         state["title"] = header_text
         state["number"] = object_number
-        state["type"] = req_type or "header"
+        state["type"] = req_type_raw or "header"
         return True
 
     return False
+
+
+def maybe_update_section_title_from_row(row: pd.Series, state: Dict[str, str]) -> None:
+    primary: List[str] = []
+    secondary: List[str] = []
+    fallback: List[str] = []
+
+    for col in row.index:
+        lowered = col.lower()
+        if any(skip in lowered for skip in SECTION_TITLE_EXCLUDES):
+            continue
+        value = str(row.get(col, "")).strip()
+        if not value:
+            continue
+
+        has_section_word = "section" in lowered or "chapter" in lowered
+        has_heading_word = "heading" in lowered
+        has_title_word = "title" in lowered or "name" in lowered
+
+        if has_section_word and (has_title_word or has_heading_word):
+            primary.append(value)
+        elif has_heading_word:
+            secondary.append(value)
+        elif has_title_word:
+            fallback.append(value)
+
+    for pool in (primary, secondary, fallback):
+        if pool:
+            chosen = pool[0]
+            if chosen != state.get("title"):
+                state["title"] = chosen
+            return
+
+
+def maybe_update_section_number_from_row(row: pd.Series, state: Dict[str, str]) -> None:
+    for col in row.index:
+        lowered = col.lower()
+        if "section" not in lowered or "number" not in lowered:
+            continue
+        value = str(row.get(col, "")).strip()
+        if value and value != state.get("number"):
+            state["number"] = value
+            return
+
+
+def maybe_update_section_type_from_row(row: pd.Series, state: Dict[str, str]) -> None:
+    for col in row.index:
+        lowered = col.lower()
+        if "section" not in lowered or "type" not in lowered:
+            continue
+        value = str(row.get(col, "")).strip()
+        if value and value.lower() != state.get("type", "").lower():
+            state["type"] = value
+            return
 
 
 def _parse_req_id_section_parts(req_id: str) -> Tuple[str, str]:
@@ -1212,13 +1277,17 @@ def normalize_fcss(
 
     for _, row in df.iterrows():
         # Section header detection (FCSS Requirement is the header text)
-        if update_section_context(
+        is_header = update_section_context(
             row,
             section_state,
             requirement_text_cols=requirement_text_cols,
             object_number_col=object_number_col,
             type_column=type_column,
-        ):
+        )
+        maybe_update_section_title_from_row(row, section_state)
+        maybe_update_section_number_from_row(row, section_state)
+        maybe_update_section_type_from_row(row, section_state)
+        if is_header:
             # This row is a header; skip making a requirement record
             continue
 
@@ -1362,13 +1431,17 @@ def normalize_css(
 
     for _, row in df.iterrows():
         # Section header detection (CSS column carries the header)
-        if update_section_context(
+        is_header = update_section_context(
             row,
             section_state,
             requirement_text_cols=requirement_text_cols,
             object_number_col=object_number_col,
             type_column=type_column,
-        ):
+        )
+        maybe_update_section_title_from_row(row, section_state)
+        maybe_update_section_number_from_row(row, section_state)
+        maybe_update_section_type_from_row(row, section_state)
+        if is_header:
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("Requirement ID", ""))
@@ -1555,13 +1628,17 @@ def normalize_csrd_like(
 
     for _, row in df.iterrows():
         # Section header detection: Derived Requirement columns carry the header text
-        if update_section_context(
+        is_header = update_section_context(
             row,
             section_state,
             requirement_text_cols=requirement_text_cols,
             object_number_col=object_number_col,
             type_column=type_column,
-        ):
+        )
+        maybe_update_section_title_from_row(row, section_state)
+        maybe_update_section_number_from_row(row, section_state)
+        maybe_update_section_type_from_row(row, section_state)
+        if is_header:
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("Requirement ID", ""))
@@ -1593,14 +1670,45 @@ def normalize_csrd_like(
         derived_flag_main = normalize_bool_token(derived_req_main_raw)
         derived_flag_freighter = normalize_bool_token(derived_req_freighter_raw)
 
+        def is_meaningful(value: str) -> bool:
+            if not value:
+                return False
+            lowered = value.lower()
+            if lowered in bool_tokens or lowered in {"nan", "none"}:
+                return False
+            return True
+
         requirement_text = str(row.get("Requirement Text", "")).strip()
-        if not requirement_text:
-            fallback_parts = [
-                val
-                for val in (derived_req_main_raw, derived_req_freighter_raw)
-                if val and val.lower() not in bool_tokens
-            ]
-            requirement_text = " | ".join(fallback_parts)
+
+    # If the source column is populated with boolean flags, treat it as empty
+    if is_meaningful(requirement_text) and requirement_text.lower() in bool_tokens:
+        requirement_text = ""
+
+        if not is_meaningful(requirement_text):
+            for col_name in cols:
+                if col_name == "Requirement Text":
+                    continue
+                lowered = col_name.lower()
+                if "derived" in lowered:
+                    continue
+                if "text" not in lowered and "statement" not in lowered and "description" not in lowered:
+                    continue
+                if "requirement" not in lowered and "req" not in lowered:
+                    continue
+                candidate = str(row.get(col_name, "")).strip()
+                if is_meaningful(candidate):
+                    requirement_text = candidate
+                    break
+
+        derived_detail_parts = [
+            val
+            for val in (derived_req_main_raw, derived_req_freighter_raw)
+            if val and val.lower() not in bool_tokens
+        ]
+        derived_detail_text = " | ".join(derived_detail_parts)
+
+        if not is_meaningful(requirement_text):
+            requirement_text = derived_detail_text
 
         dr_rationale = str(row.get("Derived Reqt Rationale", "")).strip()
         dr_rationale2 = str(row.get("Derived Reqt Rationale2", "")).strip()
@@ -1685,16 +1793,7 @@ def normalize_csrd_like(
             "Safety": safety,
             "Object_Number": object_number,
             "Requirement_Text": requirement_text,
-            "Derived_Requirement_Text": " | ".join(
-                [
-                    part
-                    for part in [
-                        f"Derived Requirement: {derived_flag_main}" if derived_flag_main else "",
-                        f"Derived Reqt Freighter: {derived_flag_freighter}" if derived_flag_freighter else "",
-                    ]
-                    if part
-                ]
-            ),
+            "Derived_Requirement_Text": derived_detail_text,
             "Derived_Requirement_Flag": derived_flag_main,
             "Derived_Reqt_Freighter_Flag": derived_flag_freighter,
             "Rationale": rationale,
@@ -1748,7 +1847,19 @@ def normalize_srs(
         reqt_no = str(req_no).strip()
         requirement_text = str(req_text).strip()
 
-        section_state = {"title": "", "number": srs_section, "type": ""}
+        title_columns = [
+            c
+            for c in g.columns
+            if "title" in c.lower() and "ole" not in c.lower()
+        ]
+        section_title_value = ""
+        for col in title_columns:
+            candidate = combine_text_from_series(g[col])
+            if candidate:
+                section_title_value = candidate
+                break
+
+        section_state = {"title": section_title_value, "number": srs_section, "type": ""}
 
         # Collect parent IDs from trace columns
         trace_ids = collect_ids_from_series(g["Traceability Doc Reqd #"]) if "Traceability Doc Reqd #" in g.columns else []
@@ -1787,6 +1898,8 @@ def normalize_srs(
             lines.append(f"SRS Section: {srs_section}")
         if reqt_no:
             lines.append(f"SRS Local Req Number: {reqt_no}")
+        if section_title_value:
+            lines.append(f"Section Title: {section_title_value}")
         if trace_source:
             lines.append(f"Trace Source: {trace_source}")
         if csrd_ssg_req_text:
@@ -1829,7 +1942,9 @@ def normalize_srs(
             "Parent_Req_IDs": join_ids(parent_ids),
             "Child_Req_IDs": join_ids(children_ids),
             "Combined_Text": combined_text,
-            # No Section_Title/Number here – SRS already has Section / Req_No explicitly
+            "Section_Title": section_state.get("title", ""),
+            "Section_Number": section_state.get("number", ""),
+            "Section_Type": section_state.get("type", ""),
         }
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
@@ -1857,13 +1972,17 @@ def normalize_fsrd(
 
     for _, row in df.iterrows():
         # Section header detection (FSRD main text column)
-        if update_section_context(
+        is_header = update_section_context(
             row,
             section_state,
             requirement_text_cols=requirement_text_cols,
             object_number_col=object_number_col,
             type_column=type_column,
-        ):
+        )
+        maybe_update_section_title_from_row(row, section_state)
+        maybe_update_section_number_from_row(row, section_state)
+        maybe_update_section_type_from_row(row, section_state)
+        if is_header:
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("ID", ""))
@@ -1987,13 +2106,17 @@ def normalize_scd(
 
     for _, row in df.iterrows():
         # Section header detection (Requirement Text column)
-        if update_section_context(
+        is_header = update_section_context(
             row,
             section_state,
             requirement_text_cols=requirement_text_cols,
             object_number_col=object_number_col,
             type_column=type_column,
-        ):
+        )
+        maybe_update_section_title_from_row(row, section_state)
+        maybe_update_section_number_from_row(row, section_state)
+        maybe_update_section_type_from_row(row, section_state)
+        if is_header:
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("Object Identifier", ""))
