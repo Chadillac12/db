@@ -871,6 +871,33 @@ def maybe_update_section_type_from_row(row: pd.Series, state: Dict[str, str]) ->
             return
 
 
+def _log_normalization_summary(
+    doc_name: str,
+    doc_type: str,
+    total_rows: int,
+    produced_rows: int,
+    stats: Optional[Dict[str, int]] = None,
+) -> None:
+    stats = stats or {}
+    detail_parts = [f"{key}={value}" for key, value in stats.items() if value]
+    detail = ", ".join(detail_parts)
+
+    if produced_rows == 0:
+        message = (
+            f"{doc_name} ({doc_type}) normalization produced 0 rows out of {total_rows}"
+        )
+        if detail:
+            message += f"; skipped breakdown: {detail}"
+        logging.warning(message)
+    else:
+        message = (
+            f"{doc_name} ({doc_type}) normalization produced {produced_rows} rows out of {total_rows}"
+        )
+        if detail:
+            message += f"; skipped breakdown: {detail}"
+        logging.debug(message)
+
+
 def _parse_req_id_section_parts(req_id: str) -> Tuple[str, str]:
     if not req_id:
         return "", ""
@@ -1266,6 +1293,7 @@ def normalize_fcss(
     spec: DocSpec,
 ) -> pd.DataFrame:
     df = df.fillna("")
+    total_rows = len(df)
     cols = df.columns
     records: List[Dict[str, Any]] = []
 
@@ -1274,6 +1302,11 @@ def normalize_fcss(
     requirement_text_cols = list(section_config.text_columns) if section_config and section_config.text_columns else ["FCSS Requirement"]
     object_number_col = section_config.object_number_column if section_config else "Object Number"
     type_column = section_config.type_column if section_config and section_config.type_column else "Requirement Type"
+    stats = {
+        "section_headers": 0,
+        "missing_requirement_id": 0,
+        "missing_object_number": 0,
+    }
 
     for _, row in df.iterrows():
         # Section header detection (FCSS Requirement is the header text)
@@ -1289,11 +1322,13 @@ def normalize_fcss(
         maybe_update_section_type_from_row(row, section_state)
         if is_header:
             # This row is a header; skip making a requirement record
+            stats["section_headers"] += 1
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("Requirement ID", ""))
         rec_id = primary_id
         if not rec_id:
+            stats["missing_requirement_id"] += 1
             continue
 
         requirement_type = str(row.get("Requirement Type", "")).strip()
@@ -1304,6 +1339,7 @@ def normalize_fcss(
 
         # ignore blank lines (w/ no object id)
         if not object_number:
+            stats["missing_object_number"] += 1
             continue
 
         # Derived Requirement columns (may be duplicated)
@@ -1410,7 +1446,9 @@ def normalize_fcss(
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
 
-    return pd.DataFrame.from_records(records)
+    result_df = pd.DataFrame.from_records(records)
+    _log_normalization_summary(doc_name, doc_type, total_rows, len(result_df), stats)
+    return result_df
 
 
 def normalize_css(
@@ -1421,6 +1459,7 @@ def normalize_css(
     spec: DocSpec,
 ) -> pd.DataFrame:
     df = df.fillna("")
+    total_rows = len(df)
     records: List[Dict[str, Any]] = []
 
     section_state = {"title": "", "number": "", "type": ""}
@@ -1428,6 +1467,11 @@ def normalize_css(
     requirement_text_cols = list(section_config.text_columns) if section_config and section_config.text_columns else ["CSS"]
     object_number_col = section_config.object_number_column if section_config else "Object Number"
     type_column = section_config.type_column if section_config and section_config.type_column else "Requirement Type"
+    stats = {
+        "section_headers": 0,
+        "missing_requirement_id": 0,
+        "missing_object_number": 0,
+    }
 
     for _, row in df.iterrows():
         # Section header detection (CSS column carries the header)
@@ -1442,11 +1486,13 @@ def normalize_css(
         maybe_update_section_number_from_row(row, section_state)
         maybe_update_section_type_from_row(row, section_state)
         if is_header:
+            stats["section_headers"] += 1
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("Requirement ID", ""))
         rec_id = primary_id
         if not rec_id:
+            stats["missing_requirement_id"] += 1
             continue
 
         requirement_type = str(row.get(type_column, "")).strip()
@@ -1457,6 +1503,7 @@ def normalize_css(
 
         # ignore blank lines (w/ no object id)
         if not object_number:
+            stats["missing_object_number"] += 1
             continue
 
         derived_flag = str(row.get("Derived", "")).strip()
@@ -1582,7 +1629,9 @@ def normalize_css(
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
 
-    return pd.DataFrame.from_records(records)
+    result_df = pd.DataFrame.from_records(records)
+    _log_normalization_summary(doc_name, doc_type, total_rows, len(result_df), stats)
+    return result_df
 
 
 def normalize_csrd_like(
@@ -1595,6 +1644,7 @@ def normalize_csrd_like(
 ) -> pd.DataFrame:
     """Normalize CSRD / FCSRD / CCSRD style exports."""
     df = df.fillna("")
+    total_rows = len(df)
     cols = df.columns
     records: List[Dict[str, Any]] = []
 
@@ -1626,6 +1676,12 @@ def normalize_csrd_like(
             ] if c in cols
         ]
 
+    stats = {
+        "section_headers": 0,
+        "missing_requirement_id": 0,
+        "missing_object_number": 0,
+    }
+
     for _, row in df.iterrows():
         # Section header detection: Derived Requirement columns carry the header text
         is_header = update_section_context(
@@ -1639,11 +1695,13 @@ def normalize_csrd_like(
         maybe_update_section_number_from_row(row, section_state)
         maybe_update_section_type_from_row(row, section_state)
         if is_header:
+            stats["section_headers"] += 1
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("Requirement ID", ""))
         rec_id = primary_id
         if not rec_id:
+            stats["missing_requirement_id"] += 1
             continue
 
         requirement_type = str(row.get(type_column, "")).strip()
@@ -1652,6 +1710,7 @@ def normalize_csrd_like(
 
         # ignore blank lines (w/ no object id)
         if not object_number:
+            stats["missing_object_number"] += 1
             continue
 
         derived_req_main_raw = str(row.get("Derived Requirement", "")).strip()
@@ -1819,7 +1878,9 @@ def normalize_csrd_like(
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
 
-    return pd.DataFrame.from_records(records)
+    result_df = pd.DataFrame.from_records(records)
+    _log_normalization_summary(doc_name, doc_type, total_rows, len(result_df), stats)
+    return result_df
 
 
 def normalize_srs(
@@ -1831,6 +1892,7 @@ def normalize_srs(
 ) -> pd.DataFrame:
     """Normalize SRS with duplicate rows merged by (SRS Section, Req't No, Requirement Text)."""
     df = df.fillna("")
+    total_rows = len(df)
 
     required_cols = ["SRS Section", "Req't No", "Requirement Text"]
     for c in required_cols:
@@ -1841,11 +1903,18 @@ def normalize_srs(
 
     group_cols = ["SRS Section", "Req't No", "Requirement Text"]
     grouped = df.groupby(group_cols, dropna=False, sort=False)
+    duplicate_rows = 0
+    blank_requirement_text_groups = 0
 
     for (section, req_no, req_text), g in grouped:
+        group_size = len(g)
+        if group_size > 1:
+            duplicate_rows += group_size - 1
         srs_section = str(section).strip()
         reqt_no = str(req_no).strip()
         requirement_text = str(req_text).strip()
+        if not requirement_text:
+            blank_requirement_text_groups += 1
 
         title_columns = [
             c
@@ -1949,7 +2018,13 @@ def normalize_srs(
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
 
-    return pd.DataFrame.from_records(records)
+    result_df = pd.DataFrame.from_records(records)
+    stats = {
+        "duplicate_rows_collapsed": duplicate_rows,
+        "blank_requirement_text_groups": blank_requirement_text_groups,
+    }
+    _log_normalization_summary(doc_name, doc_type, total_rows, len(result_df), stats)
+    return result_df
 
 
 def normalize_fsrd(
@@ -1960,6 +2035,7 @@ def normalize_fsrd(
     spec: DocSpec,
 ) -> pd.DataFrame:
     df = df.fillna("")
+    total_rows = len(df)
     records: List[Dict[str, Any]] = []
 
     section_state = {"title": "", "number": "", "type": ""}
@@ -1969,6 +2045,11 @@ def normalize_fsrd(
     requirement_text_cols = list(section_config.text_columns) if section_config and section_config.text_columns else [req_col]
     object_number_col = section_config.object_number_column if section_config else "Object Number"
     type_column = section_config.type_column if section_config and section_config.type_column else "Requirement Type"
+    stats = {
+        "section_headers": 0,
+        "missing_requirement_id": 0,
+        "missing_object_number": 0,
+    }
 
     for _, row in df.iterrows():
         # Section header detection (FSRD main text column)
@@ -1983,11 +2064,13 @@ def normalize_fsrd(
         maybe_update_section_number_from_row(row, section_state)
         maybe_update_section_type_from_row(row, section_state)
         if is_header:
+            stats["section_headers"] += 1
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("ID", ""))
         rec_id = primary_id
         if not rec_id:
+            stats["missing_requirement_id"] += 1
             continue
 
         object_number = str(row.get(object_number_col, "")).strip()
@@ -2000,6 +2083,7 @@ def normalize_fsrd(
 
         # ignore blank lines (w/ no object id)
         if not object_number:
+            stats["missing_object_number"] += 1
             continue
 
         rationale = str(row.get("Rationale", "")).strip()
@@ -2085,7 +2169,9 @@ def normalize_fsrd(
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
 
-    return pd.DataFrame.from_records(records)
+    result_df = pd.DataFrame.from_records(records)
+    _log_normalization_summary(doc_name, doc_type, total_rows, len(result_df), stats)
+    return result_df
 
 
 def normalize_scd(
@@ -2096,6 +2182,7 @@ def normalize_scd(
     spec: DocSpec,
 ) -> pd.DataFrame:
     df = df.fillna("")
+    total_rows = len(df)
     records: List[Dict[str, Any]] = []
 
     section_state = {"title": "", "number": "", "type": ""}
@@ -2103,6 +2190,11 @@ def normalize_scd(
     requirement_text_cols = list(section_config.text_columns) if section_config and section_config.text_columns else ["Requirement Text"]
     object_number_col = section_config.object_number_column if section_config else "Object Number"
     type_column = section_config.type_column if section_config and section_config.type_column else "Requirement Type"
+    stats = {
+        "section_headers": 0,
+        "missing_requirement_id": 0,
+        "missing_object_number": 0,
+    }
 
     for _, row in df.iterrows():
         # Section header detection (Requirement Text column)
@@ -2117,11 +2209,13 @@ def normalize_scd(
         maybe_update_section_number_from_row(row, section_state)
         maybe_update_section_type_from_row(row, section_state)
         if is_header:
+            stats["section_headers"] += 1
             continue
 
         primary_id, aliases_str = extract_primary_and_aliases(row.get("Object Identifier", ""))
         rec_id = primary_id
         if not rec_id:
+            stats["missing_requirement_id"] += 1
             continue
 
         requirement_text = str(row.get("Requirement Text", "")).strip()
@@ -2145,6 +2239,7 @@ def normalize_scd(
 
         # ignore blank lines (w/ no object id)
         if not object_number:
+            stats["missing_object_number"] += 1
             continue
 
         in_links_srd_raw = str(row.get("In-links (SRD)", "")).strip()
@@ -2251,7 +2346,9 @@ def normalize_scd(
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
 
-    return pd.DataFrame.from_records(records)
+    result_df = pd.DataFrame.from_records(records)
+    _log_normalization_summary(doc_name, doc_type, total_rows, len(result_df), stats)
+    return result_df
 
 
 def normalize_ssg(
@@ -2262,13 +2359,19 @@ def normalize_ssg(
     spec: DocSpec,
 ) -> pd.DataFrame:
     df = df.fillna("")
+    total_rows = len(df)
     records: List[Dict[str, Any]] = []
     section_state = {"title": "", "number": "", "type": ""}
+    stats = {
+        "missing_requirement_id": 0,
+        "filtered_object_type": 0,
+    }
 
     for _, row in df.iterrows():
         primary_id, aliases_str = extract_primary_and_aliases(row.get("ID", ""))
         rec_id = primary_id
         if not rec_id:
+            stats["missing_requirement_id"] += 1
             continue
 
         requirement_text = str(row.get("Systems/Software Guidelines (SSG)", "")).strip()
@@ -2278,6 +2381,7 @@ def normalize_ssg(
 
         # Skip SSG rows where Object Type is 'info' or 'title' (case-insensitive)
         if object_type and object_type.lower() in SSG_SKIP_OBJECT_TYPES:
+            stats["filtered_object_type"] += 1
             continue
 
         parent_ids: List[str] = []
@@ -2324,7 +2428,9 @@ def normalize_ssg(
         _apply_inference_to_record(record, spec, section_state, rec_id)
         records.append(record)
 
-    return pd.DataFrame.from_records(records)
+    result_df = pd.DataFrame.from_records(records)
+    _log_normalization_summary(doc_name, doc_type, total_rows, len(result_df), stats)
+    return result_df
 
 
 ########################
