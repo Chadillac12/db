@@ -274,9 +274,10 @@ DEFAULT_DOC_SPEC_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "Out-links (Product Specification)",
             "Out-links (Product Specification)3",
             "Out-links (Controller_PS)",
+            "Requirement Text",
         ],
         "id_columns": ["Requirement ID"],
-        "text_columns": ["Derived Requirement", "Derived Reqt Freighter"],
+        "text_columns": ["Requirement Text", "Derived Requirement", "Derived Reqt Freighter"],
         "trace_columns": {
             "parents": [
                 "Out-links (Product Specification)",
@@ -289,7 +290,7 @@ DEFAULT_DOC_SPEC_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "type_column": "Requirement Type",
             "header_types": list(DEFAULT_HEADER_TYPES),
             "object_number_column": "Object Number",
-            "text_columns": ["Derived Requirement", "Derived Reqt Freighter"],
+            "text_columns": ["Requirement Text", "Derived Requirement", "Derived Reqt Freighter"],
         },
     },
     "FCSRD": {
@@ -310,10 +311,11 @@ DEFAULT_DOC_SPEC_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "Out-links (Product Specification)",
             "Out-links (FSRD)",
             "Out-links (CSS)",
+            "Requirement Text",
         ],
         "aliases": ["CCSRD"],
         "id_columns": ["Requirement ID"],
-        "text_columns": ["Derived Requirement", "Derived Reqt Freighter"],
+        "text_columns": ["Requirement Text", "Derived Requirement", "Derived Reqt Freighter"],
         "trace_columns": {
             "parents": [
                 "Out-links (Product Specification)",
@@ -326,7 +328,7 @@ DEFAULT_DOC_SPEC_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "type_column": "Requirement Type",
             "header_types": list(DEFAULT_HEADER_TYPES),
             "object_number_column": "Object Number",
-            "text_columns": ["Derived Requirement", "Derived Reqt Freighter"],
+            "text_columns": ["Requirement Text", "Derived Requirement", "Derived Reqt Freighter"],
         },
     },
     "SRS": {
@@ -1525,7 +1527,11 @@ def normalize_csrd_like(
 
     section_state = {"title": "", "number": "", "type": ""}
     section_config = spec.section_detection
-    requirement_text_cols = list(section_config.text_columns) if section_config and section_config.text_columns else ["Derived Requirement", "Derived Reqt Freighter"]
+    if section_config and section_config.text_columns:
+        requirement_text_cols = list(section_config.text_columns)
+    else:
+        requirement_text_cols = ["Requirement Text", "Derived Requirement", "Derived Reqt Freighter"]
+    requirement_text_cols = list(dict.fromkeys(requirement_text_cols))
     object_number_col = section_config.object_number_column if section_config else "Object Number"
     type_column = section_config.type_column if section_config and section_config.type_column else "Requirement Type"
 
@@ -1571,10 +1577,30 @@ def normalize_csrd_like(
         if not object_number:
             continue
 
-        derived_req_main = str(row.get("Derived Requirement", "")).strip()
-        derived_req_freighter = str(row.get("Derived Reqt Freighter", "")).strip()
-        requirement_text_parts = [p for p in [derived_req_main, derived_req_freighter] if p]
-        requirement_text = " | ".join(requirement_text_parts)
+        derived_req_main_raw = str(row.get("Derived Requirement", "")).strip()
+        derived_req_freighter_raw = str(row.get("Derived Reqt Freighter", "")).strip()
+
+        bool_tokens = {"true", "false", "yes", "no", "y", "n", "1", "0"}
+
+        def normalize_bool_token(token: str) -> str:
+            lowered = token.lower()
+            if lowered in {"true", "yes", "y", "1"}:
+                return "true"
+            if lowered in {"false", "no", "n", "0"}:
+                return "false"
+            return token
+
+        derived_flag_main = normalize_bool_token(derived_req_main_raw)
+        derived_flag_freighter = normalize_bool_token(derived_req_freighter_raw)
+
+        requirement_text = str(row.get("Requirement Text", "")).strip()
+        if not requirement_text:
+            fallback_parts = [
+                val
+                for val in (derived_req_main_raw, derived_req_freighter_raw)
+                if val and val.lower() not in bool_tokens
+            ]
+            requirement_text = " | ".join(fallback_parts)
 
         dr_rationale = str(row.get("Derived Reqt Rationale", "")).strip()
         dr_rationale2 = str(row.get("Derived Reqt Rationale2", "")).strip()
@@ -1634,6 +1660,10 @@ def normalize_csrd_like(
             lines.append(f"RCN: {rcn}")
         if rationale:
             lines.append(f"Rationale: {rationale}")
+        if derived_flag_main:
+            lines.append(f"Derived Requirement Flag: {derived_flag_main}")
+        if derived_flag_freighter:
+            lines.append(f"Derived Reqt Freighter Flag: {derived_flag_freighter}")
 
         lines.append(f"Parent Requirements (Out-links): {join_ids(parent_ids) or '<none>'}")
         lines.append(f"Child Requirements (In-links): {join_ids(children_ids) or '<none>'}")
@@ -1655,7 +1685,18 @@ def normalize_csrd_like(
             "Safety": safety,
             "Object_Number": object_number,
             "Requirement_Text": requirement_text,
-            "Derived_Requirement_Text": derived_req_main,
+            "Derived_Requirement_Text": " | ".join(
+                [
+                    part
+                    for part in [
+                        f"Derived Requirement: {derived_flag_main}" if derived_flag_main else "",
+                        f"Derived Reqt Freighter: {derived_flag_freighter}" if derived_flag_freighter else "",
+                    ]
+                    if part
+                ]
+            ),
+            "Derived_Requirement_Flag": derived_flag_main,
+            "Derived_Reqt_Freighter_Flag": derived_flag_freighter,
             "Rationale": rationale,
             "Column1": column1,
             "Export_Formatting": export_fmt,
@@ -2485,6 +2526,8 @@ def create_sqlite_db(
         "Parent_CSS_Requirement",
         "FCSS_Mapped_CSS_Requirement",
         "CSS_Requirement_Text",
+        "Derived_Requirement_Flag",
+        "Derived_Reqt_Freighter_Flag",
         "Implementation_Allocation",
         "Source_ID",
         "Reference_Model",
