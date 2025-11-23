@@ -2356,8 +2356,13 @@ def normalize_one(
 
     if detected_kind and detected_kind != spec.doc_type and detected_kind not in spec.aliases:
         logging.warning(
-            "Document kind detection does not match declared doc_type",
+            "Document kind detection mismatch for %s (%s): detected %s, using %s",
+            doc_name,
+            doc_type,
+            detected_kind,
+            spec.doc_type,
             extra={
+                "doc_name": doc_name,
                 "declared_doc_type": doc_type,
                 "detected_kind": detected_kind,
                 "using_kind": spec.doc_type,
@@ -2395,8 +2400,13 @@ def load_and_normalize_all(
     all_frames: List[pd.DataFrame] = []
 
     logging.info(
-        "Loading inputs with schema",
-        extra={"schema_version": schema.version, "doc_types": schema.available_types()},
+        "Loading %d configured documents with schema",
+        len(config),
+        extra={
+            "schema_version": schema.version,
+            "doc_types": schema.available_types(),
+            "base_directory": str(base_dir.resolve()),
+        },
     )
 
     for cfg in config:
@@ -2414,19 +2424,77 @@ def load_and_normalize_all(
         source_path = source_path.resolve()
 
         if not source_path.exists():
-            logging.warning("Input file missing – skipping", extra={"path": str(source_path)})
+            logging.warning(
+                "Input file missing for document %s (%s) – skipping",
+                doc_name,
+                doc_type,
+                extra={
+                    "path": str(source_path),
+                    "doc_name": doc_name,
+                    "doc_type": doc_type,
+                    "level": level,
+                },
+            )
             continue
 
-        logging.info("Loading spreadsheet", extra={"path": str(source_path)})
+        logging.info(
+            "Loading spreadsheet for document %s (%s) from %s",
+            doc_name,
+            doc_type,
+            str(source_path),
+            extra={
+                "path": str(source_path),
+                "doc_name": doc_name,
+                "doc_type": doc_type,
+                "level": level,
+            },
+        )
         try:
             df_raw = pd.read_excel(source_path)
         except Exception as exc:
             raise RuntimeError(f"Failed to read Excel export at {source_path}") from exc
 
+        logging.info(
+            "Loaded %d rows and %d columns for document %s (%s)",
+            len(df_raw),
+            df_raw.shape[1],
+            doc_name,
+            doc_type,
+            extra={
+                "rows": len(df_raw),
+                "columns": list(df_raw.columns),
+                "doc_name": doc_name,
+                "doc_type": doc_type,
+                "level": level,
+            },
+        )
+
         df_norm = normalize_one(df_raw, doc_name, doc_type, level, schema)
         if df_norm.empty:
             logging.warning(
-                "Normalizer produced zero rows", extra={"path": str(source_path), "doc": doc_name}
+                "Normalizer produced zero rows for document %s (%s)",
+                doc_name,
+                doc_type,
+                extra={
+                    "path": str(source_path),
+                    "doc_name": doc_name,
+                    "doc_type": doc_type,
+                    "level": level,
+                    "columns": list(df_raw.columns),
+                },
+            )
+        else:
+            logging.info(
+                "Normalized %s (%s) into %d records",
+                doc_name,
+                doc_type,
+                len(df_norm),
+                extra={
+                    "rows": len(df_norm),
+                    "doc_name": doc_name,
+                    "doc_type": doc_type,
+                    "level": level,
+                },
             )
         all_frames.append(df_norm)
 
@@ -2434,7 +2502,12 @@ def load_and_normalize_all(
         raise RuntimeError("No input files were loaded. Please verify the configuration paths.")
 
     df_all = pd.concat(all_frames, ignore_index=True)
-    logging.info("Combined normalized dataframe", extra={"rows": len(df_all)})
+    logging.info(
+        "Combined normalized dataframe with %d total rows across %d documents",
+        len(df_all),
+        len(all_frames),
+        extra={"rows": len(df_all), "document_frames": len(all_frames)},
+    )
 
     # Ensure core columns exist
     for col in [
