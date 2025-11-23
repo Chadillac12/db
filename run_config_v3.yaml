@@ -1,0 +1,332 @@
+version: "custom-optimal-2025-11"
+
+# -------------------------------------------------------------------
+# SCHEMA DEFINITIONS
+# -------------------------------------------------------------------
+# This section defines the rules for each document type.
+# Sourced from docs/optimal_schema.yaml
+# -------------------------------------------------------------------
+schema:
+  documents:
+    - doc_type: "FCSS"
+      normalizer: "fcss"
+      required_columns:
+        - "Requirement ID"
+        - "Object Number"
+        - "FCSS Requirement"
+      optional_columns:
+        - "Requirement Type"
+        - "Safety"
+        - "Implementation Allocation"
+        - "Derived Requirement"
+        - "Source ID"
+        - "Reference Model"
+        - "Rationale"
+        - "Programmatic Requirement"
+        - "OLE Title"
+        - "OLE Title 2"
+        - "Design Implementation Note"
+        - "Design Implementation Note 2"
+        - "In-links (Control System Requirements)"
+        - "Out-links (FSRD)"
+      id_columns: ["Requirement ID"]
+      text_columns: ["FCSS Requirement"]
+      trace_columns:
+        parents: ["Out-links (FSRD)"]
+        children: ["In-links (Control System Requirements)"]
+      section_detection:
+        type_column: "Requirement Type"
+        header_types: ["header", "heading", "section header"]
+        object_number_column: "Object Number"
+        text_columns: ["FCSS Requirement"]
+      inference:
+        inherit_section_context: true
+        infer_from_req_id: true
+        object_number_column: "Object_Number"
+        section_number_column: "Section_Number"
+        section_title_column: "Section_Title"
+        section_type_column: "Section_Type"
+        section_alias_columns: ["SectionTitle", "Section"]
+
+    - doc_type: "CSS"
+      normalizer: "css"
+      required_columns:
+        - "Requirement ID"
+        - "Object Number"
+        - "CSS"
+      optional_columns:
+        - "Requirement Type"
+        - "Safety"
+        - "System Review Status"
+        - "Derived"
+        - "Derived Rationale"
+        - "Rationale"
+        - "Allocations"
+        - "Allocations2"
+        - "OLE Title"
+        - "Compare-Diff-Object Text"
+        - "Acceptable Verification Methods"
+        - "Verification Level"
+        - "Verification Type"
+        - "Verification Standard"
+        - "Comments"
+        - "Rework Category"
+        - "Rework Category3"
+        - "Decomposed Requirement"
+        - "In-links (Control System Requirements)"
+        - "Out-links (All modules)"
+      id_columns: ["Requirement ID"]
+      text_columns: ["CSS"]
+      trace_columns:
+        parents: ["Out-links (All modules)"]
+        children: ["In-links (Control System Requirements)"]
+      section_detection:
+        type_column: "Requirement Type"
+        header_types: ["header", "heading", "section header"]
+        object_number_column: "Object Number"
+        text_columns: ["CSS"]
+      inference:
+        inherit_section_context: true
+        infer_from_req_id: true
+        object_number_column: "Object_Number"
+        section_number_column: "Section_Number"
+        section_title_column: "Section_Title"
+        section_type_column: "Section_Type"
+        section_alias_columns: ["Section", "SectionTitle"]
+
+    - doc_type: "CSRD"
+      normalizer: "csrd"
+      required_columns:
+        - "Requirement ID"
+        - "Object Number"
+        - "Derived Requirement"
+      optional_columns:
+        - "Derived Reqt Freighter"
+        - "Requirement Type"
+        - "Safety"
+        - "Derived Reqt Rationale"
+        - "Derived Reqt Rationale2"
+        - "Derived Reqt Freighter Rationale"
+        - "Applicable Model"
+        - "Export Formatting"
+        - "Column1"
+        - "OLE Title"
+        - "SRS Reqs - SC"
+        - "RCN"
+        - "Out-links (Product Specification)"
+        - "Out-links (Product Specification)3"
+        - "Out-links (Controller_PS)"
+      id_columns: ["Requirement ID"]
+      text_columns: ["Derived Requirement", "Derived Reqt Freighter"]
+      trace_columns:
+        parents:
+          - "Out-links (Product Specification)"
+          - "Out-links (Product Specification)3"
+          - "Out-links (Controller_PS)"
+        children: []
+      section_detection:
+        type_column: "Requirement Type"
+        header_types: ["header", "heading", "section header"]
+        object_number_column: "Object Number"
+        text_columns: ["Derived Requirement", "Derived Reqt Freighter"]
+      inference:
+        inherit_section_context: true
+        infer_from_req_id: true
+        object_number_column: "Object_Number"
+        section_number_column: "Section_Number"
+        section_title_column: "Section_Title"
+        section_type_column: "Section_Type"
+        section_alias_columns: ["Section", "SectionTitle"]
+
+    - doc_type: "FCSRD"
+      normalizer: "fcsrd"
+      aliases: ["CCSRD"]
+      required_columns:
+        - "Requirement ID"
+        - "Object Number"
+        - "Derived Requirement"
+      optional_columns:
+        - "Derived Reqt Freighter"
+        - "Requirement Type"
+        - "Safety"
+        - "Derived Reqt Rationale"
+        - "Derived Reqt Rationale2"
+        - "Derived Reqt Freighter Rationale"
+        - "Applicable Model"
+        - "Export Formatting"
+        - "Column1"
+        - "OLE Title"
+        - "SRS Reqs - SC"
+        - "RCN"
+        - "Out-links (Product Specification)"
+        - "Out-links (FSRD)"
+        - "Out-links (CSS)"
+      id_columns: ["Requirement ID"]
+      text_columns: ["Derived Requirement", "Derived Reqt Freighter"]
+      trace_columns:
+        parents:
+          - "Out-links (Product Specification)"
+          - "Out-links (FSRD)"
+          - "Out-links (CSS)"
+        children: []
+      section_detection:
+        type_column: "Requirement Type"
+        header_types: ["header", "heading", "section header"]
+        object_number_column: "Object Number"
+        text_columns: ["Derived Requirement", "Derived Reqt Freighter"]
+      inference:
+        inherit_section_context: true
+        infer_from_req_id: true
+        object_number_column: "Object_Number"
+        section_number_column: "Section_Number"
+        section_title_column: "Section_Title"
+        section_type_column: "Section_Type"
+        section_alias_columns: ["Section", "SectionTitle"]
+
+    - doc_type: "SRS"
+      normalizer: "srs"
+      required_columns:
+        - "SRS Section"
+        - "Req't No"
+        - "Requirement Text"
+      optional_columns:
+        - "Traceability Doc Reqd #"
+        - "Trace Source"
+        - "CSRD/SSG Requirement Text"
+        - "Parent CSS ID"
+        - "Parent CSS Requirement"
+        - "FCSS-mapped CSS Requirement"
+        - "CSS Requirement Text"
+      id_columns: ["SRS Section", "Req't No"]
+      text_columns: ["Requirement Text"]
+      trace_columns:
+        parents: ["Traceability Doc Reqd #", "Parent CSS ID"]
+        children: []
+      inference:
+        inherit_section_context: false
+        infer_from_req_id: true
+        object_number_column: "SRS_Local_Req_No"
+        section_number_column: "SRS_Section"
+        section_title_column: "Section_Title"
+        section_alias_columns: ["Section", "SectionTitle"]
+
+    - doc_type: "FSRD"
+      normalizer: "fsrd"
+      required_columns:
+        - "ID"
+        - "Object Number"
+        - "Boeing 777-8F CACTCS System Requirements Document HSER41191-201"
+      optional_columns:
+        - "Requirement Type"
+        - "Programmatic Requirement"
+        - "Safety"
+        - "Rationale"
+        - "Discrete Control Architecture"
+        - "Design Implementation Note"
+        - "Derived Requirement"
+        - "Allocation"
+        - "In-links (All modules)"
+        - "Out-links (All modules)"
+      id_columns: ["ID"]
+      text_columns: ["Boeing 777-8F CACTCS System Requirements Document HSER41191-201"]
+      trace_columns:
+        parents: ["Out-links (All modules)"]
+        children: ["In-links (All modules)"]
+      section_detection:
+        type_column: "Requirement Type"
+        header_types: ["header", "heading", "section header"]
+        object_number_column: "Object Number"
+        text_columns: ["Boeing 777-8F CACTCS System Requirements Document HSER41191-201"]
+      inference:
+        inherit_section_context: true
+        infer_from_req_id: true
+        object_number_column: "Object_Number"
+        section_number_column: "Section_Number"
+        section_title_column: "Section_Title"
+        section_type_column: "Section_Type"
+        section_alias_columns: ["Section", "SectionTitle"]
+
+    - doc_type: "SCD"
+      normalizer: "scd"
+      required_columns:
+        - "Object Identifier"
+        - "Object Number"
+        - "Requirement Text"
+      optional_columns:
+        - "Object Type"
+        - "System Arch"
+        - "Rationale for Derived Requirement"
+        - "RSC -8F"
+        - "RSC Rationale -8F"
+        - "Programmatic Requirement (-8F)"
+        - "Part Allocation (Lower Level)"
+        - "Functional Allocation"
+        - "Comments/Notes"
+        - "Change Rationale"
+        - "Cardinal Rqmt"
+        - "Assumptions/Rationale"
+        - "Allocations"
+        - "Allocation"
+        - "Applicable Model"
+        - "Part Number Applicability"
+        - "In-links (SRD)"
+        - "In-links (All modules)"
+      id_columns: ["Object Identifier"]
+      text_columns: ["Requirement Text"]
+      trace_columns:
+        parents: []
+        children: ["In-links (SRD)", "In-links (All modules)"]
+      section_detection:
+        type_column: "Requirement Type"
+        header_types: ["header", "heading", "section header"]
+        object_number_column: "Object Number"
+        text_columns: ["Requirement Text"]
+      inference:
+        inherit_section_context: true
+        infer_from_req_id: true
+        object_number_column: "Object_Number"
+        section_number_column: "Section_Number"
+        section_title_column: "Section_Title"
+        section_type_column: "Section_Type"
+        section_alias_columns: ["Section", "SectionTitle"]
+
+    - doc_type: "SSG"
+      normalizer: "ssg"
+      required_columns:
+        - "ID"
+        - "Systems/Software Guidelines (SSG)"
+      optional_columns:
+        - "Object Type"
+        - "OLE Title"
+        - "Export Formatting"
+      id_columns: ["ID"]
+      text_columns: ["Systems/Software Guidelines (SSG)"]
+      trace_columns:
+        parents: []
+        children: []
+      inference:
+        inherit_section_context: false
+        infer_from_req_id: false
+
+
+# -------------------------------------------------------------------
+# INPUT FILES
+# -------------------------------------------------------------------
+# List the files to process.
+# - path: Relative or absolute path to the file (CSV or Excel).
+# - doc_type: Must match a doc_type defined in the schema above.
+# - doc_name: Unique name for this document instance.
+# - level: System_High, System_Mid, Software_Low, etc.
+# -------------------------------------------------------------------
+inputs:
+  # Example entries - replace with your actual files
+  # - path: "data/fcss_v1.xlsx"
+  #   doc_name: "Flight_Control_Specs"
+  #   doc_type: "FCSS"
+  #   level: "System_Mid"
+  #   sheet_name: "Requirements" 
+
+  # - path: "data/srs_flight_logic.csv"
+  #   doc_name: "SRS_Flight_Logic"
+  #   doc_type: "SRS"
+  #   level: "Software_Low"
