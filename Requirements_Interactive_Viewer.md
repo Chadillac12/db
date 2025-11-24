@@ -19,7 +19,17 @@ try {
     PAGE_SIZE: 50,  // Lazy load batch size
     DEBOUNCE_MS: 300,  // Filter debounce delay
     FOLDER_PATH: "02-CACTCS/Requirements",  // Requirements folder
-    CACHE_DURATION: 60000  // 1 minute cache
+    CACHE_DURATION: 60000,  // 1 minute cache
+    // Display Configuration
+    SHOW_PARENT_TAGS: true,
+    SHOW_REQ_TEXT_HEADER: true,
+    DISPLAY_FIELDS: [
+      { label: "Document", field: "Doc_Name" },
+      { label: "Level", field: "Level" },
+      { label: "Section", field: "Section_Title", fallback: "Section" },
+      { label: "Object #", field: "Object_Number" },
+      { label: "SRS Local", field: "SRS_Local_Req_No" }
+    ]
   };
 
   const FILTER_STATE_KEY = 'requirements_filter_state_v2';
@@ -134,8 +144,14 @@ try {
       backgroundColor: "var(--background-modifier-border)",
       color: "var(--text-muted)"
     },
+    descriptionHeader: {
+      fontWeight: "600",
+      fontSize: "0.9em",
+      color: "var(--text-muted)",
+      marginBottom: "4px",
+      marginTop: "12px"
+    },
     description: {
-      marginTop: "12px",
       padding: "12px",
       borderLeft: "3px solid var(--background-modifier-border)",
       backgroundColor: "var(--background-primary)"
@@ -164,6 +180,26 @@ try {
       fontSize: "0.85em",
       cursor: "pointer",
       border: "1px solid var(--background-modifier-border)"
+    },
+    parentTags: {
+      marginTop: "8px",
+      display: "flex",
+      gap: "6px",
+      flexWrap: "wrap",
+      alignItems: "center"
+    },
+    parentTagLabel: {
+      fontSize: "0.85em",
+      color: "var(--text-muted)",
+      marginRight: "4px"
+    },
+    parentTag: {
+      fontSize: "0.8em",
+      padding: "2px 8px",
+      borderRadius: "10px",
+      backgroundColor: "var(--background-secondary-alt)",
+      border: "1px solid var(--background-modifier-border)",
+      color: "var(--text-muted)"
     },
     stats: {
       display: "flex",
@@ -487,6 +523,12 @@ try {
   // Load all requirements pages
   const pages = dv.pages(`"${CONFIG.FOLDER_PATH}"`).array();
   
+  // Create lookup map for parent tags
+  const reqIdMap = new Map();
+  pages.forEach(p => {
+    if (p.Req_ID) reqIdMap.set(p.Req_ID, p);
+  });
+  
   // Extract unique values for dropdowns
   const docTypes = [...new Set(pages.map(p => p.Doc_Type).filter(Boolean))].sort();
   const levels = [...new Set(pages.map(p => p.Level).filter(Boolean))].sort();
@@ -668,26 +710,27 @@ try {
     Object.assign(badge.style, STYLES.badge, STYLES.reqBadge);
     badge.textContent = page.Doc_Type || "Unknown";
     
-    // Metadata grid
+    // Metadata grid (Configurable)
     const metaGrid = card.createEl("div");
     Object.assign(metaGrid.style, STYLES.metadataGrid);
     
-    [
-      ["Document", page.Doc_Name],
-      ["Level", page.Level],
-      ["Section", page.Section_Title || page.Section],
-      ["Object #", page.Object_Number],
-      ["SRS Local", page.SRS_Local_Req_No]
-    ].forEach(([label, value]) => {
+    CONFIG.DISPLAY_FIELDS.forEach(fieldConfig => {
+      const value = page[fieldConfig.field] || (fieldConfig.fallback ? page[fieldConfig.fallback] : null);
       if (value) {
         const item = metaGrid.createEl("div");
         Object.assign(item.style, STYLES.metadataItem);
-        item.innerHTML = `<strong>${label}:</strong> <span>${value}</span>`;
+        item.innerHTML = `<strong>${fieldConfig.label}:</strong> <span>${value}</span>`;
       }
     });
     
     // Requirement text
     if (page.Requirement_Text) {
+      if (CONFIG.SHOW_REQ_TEXT_HEADER) {
+        const textHeader = card.createEl("div");
+        Object.assign(textHeader.style, STYLES.descriptionHeader);
+        textHeader.textContent = "Requirement Text";
+      }
+      
       const textDiv = card.createEl("div");
       Object.assign(textDiv.style, STYLES.description);
       textDiv.textContent = page.Requirement_Text;
@@ -706,11 +749,39 @@ try {
         const parentLinks = traceDiv.createEl("div");
         Object.assign(parentLinks.style, STYLES.traceLinks);
         
-        String(page.Parents).split(",").forEach(parent => {
+        const parents = String(page.Parents).split(",").map(p => p.trim()).filter(Boolean);
+        
+        parents.forEach(parent => {
           const link = parentLinks.createEl("span");
           Object.assign(link.style, STYLES.traceLink);
-          link.textContent = parent.trim();
+          link.textContent = parent;
         });
+
+        // Parent Tags Display
+        if (CONFIG.SHOW_PARENT_TAGS) {
+          const parentTags = new Set();
+          parents.forEach(parentId => {
+            const parentPage = reqIdMap.get(parentId);
+            if (parentPage && parentPage.tags) {
+              parentPage.tags.forEach(tag => parentTags.add(tag));
+            }
+          });
+
+          if (parentTags.size > 0) {
+            const tagsDiv = traceDiv.createEl("div");
+            Object.assign(tagsDiv.style, STYLES.parentTags);
+            
+            const label = tagsDiv.createEl("span");
+            Object.assign(label.style, STYLES.parentTagLabel);
+            label.textContent = "Parent Tags:";
+            
+            parentTags.forEach(tag => {
+              const tagEl = tagsDiv.createEl("span");
+              Object.assign(tagEl.style, STYLES.parentTag);
+              tagEl.textContent = tag;
+            });
+          }
+        }
       }
       
       if (page.Children) {
