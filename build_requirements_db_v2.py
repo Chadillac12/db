@@ -458,6 +458,18 @@ HEADER_KEYWORDS = {
 SECTION_TITLE_EXCLUDES = {"ole"}
 
 
+def is_section_header_number(object_number: str) -> bool:
+    """Check if an object number represents a section header (no dash).
+    
+    Section headers are like: 4.1.1, 3.2, 1
+    Regular requirements are like: 4.1.1-1, 3.2-5, 1-A
+    """
+    if not object_number:
+        return False
+    # Section headers don't contain dashes
+    return "-" not in object_number
+
+
 def update_section_context(
     row: pd.Series,
     state: Dict[str, str],
@@ -480,13 +492,25 @@ def update_section_context(
                 header_text = txt
                 break
 
-    if is_header_type and header_text and not object_number:
+    # NEW LOGIC: Detect section headers by object number pattern (no dash)
+    # OR by the old logic (header type with text but no object number)
+    is_section_header = False
+    
+    if is_section_header_number(object_number) and header_text:
+        # Section header with object number like "4.1.1"
+        state["title"] = header_text
+        state["number"] = object_number
+        state["type"] = req_type_raw or "section"
+        is_section_header = True
+    elif is_header_type and header_text and not object_number:
+        # Old-style header without object number
         state["title"] = header_text
         state["number"] = object_number
         state["type"] = req_type_raw or "header"
-        return True
+        is_section_header = True
 
-    return False
+    return is_section_header
+
 
 
 def maybe_update_section_title_from_row(row: pd.Series, state: Dict[str, str]) -> None:
@@ -985,8 +1009,53 @@ def normalize_fcss(
         maybe_update_section_title_from_row(row, section_state)
         maybe_update_section_number_from_row(row, section_state)
         maybe_update_section_type_from_row(row, section_state)
+        
+        # NEW: Retain section headers instead of skipping them
         if is_header:
             stats["section_headers"] += 1
+            # Create a record for the section header
+            object_number = str(row.get(object_number_col, "")).strip()
+            
+            # Use object number as ID if available, otherwise generate one
+            id_col = spec.id_columns[0] if spec.id_columns else "Requirement ID"
+            header_id = str(row.get(id_col, "")).strip() or object_number or f"SECTION_{stats['section_headers']}"
+            
+            # Get text from text columns
+            req_text_parts = []
+            for tc in spec.text_columns:
+                val = str(row.get(tc, "")).strip()
+                if val:
+                    req_text_parts.append(val)
+            requirement_text = " | ".join(req_text_parts)
+            
+            # Build combined text for section header
+            lines: List[str] = [
+                f"Section: {object_number or 'N/A'}",
+                f"Title: {section_state.get('title', '')}",
+                f"Document: {doc_name} ({doc_type})",
+                f"Level: {level}",
+            ]
+            combined_text = "\\n".join(lines)
+            
+            record = {
+                "Req_ID": header_id,
+                "Doc_Name": doc_name,
+                "Doc_Type": doc_type,
+                "Level": level,
+                "Object_Number": object_number,
+                "Requirement_Text": requirement_text,
+                "Aliases": "",
+                "Parent_Req_IDs": "",
+                "Child_Req_IDs": "",
+                "Combined_Text": combined_text,
+                "Section_Title": section_state.get("title", ""),
+                "Section_Number": section_state.get("number", ""),
+                "Section_Type": section_state.get("type", ""),
+                "Is_Section_Header": True,  # NEW FLAG
+            }
+            
+            _apply_inference_to_record(record, spec, section_state, header_id)
+            records.append(record)
             continue
 
         # ID Columns
@@ -1066,6 +1135,7 @@ def normalize_fcss(
             "Section_Title": section_state.get("title", ""),
             "Section_Number": section_state.get("number", ""),
             "Section_Type": section_state.get("type", ""),
+            "Is_Section_Header": False,  # Regular requirement, not a section header
         }
         
         # Preserve raw columns for optional fields
@@ -1121,8 +1191,53 @@ def normalize_generic_traceable(
         maybe_update_section_title_from_row(row, section_state)
         maybe_update_section_number_from_row(row, section_state)
         maybe_update_section_type_from_row(row, section_state)
+        
+        # NEW: Retain section headers instead of skipping them
         if is_header:
             stats["section_headers"] += 1
+            # Create a record for the section header
+            object_number = str(row.get(object_number_col, "")).strip()
+            
+            # Use object number as ID if available, otherwise generate one
+            id_col = spec.id_columns[0] if spec.id_columns else "Requirement ID"
+            header_id = str(row.get(id_col, "")).strip() or object_number or f"SECTION_{stats['section_headers']}"
+            
+            # Get text from text columns
+            text_parts = []
+            for tc in spec.text_columns:
+                val = str(row.get(tc, "")).strip()
+                if val:
+                    text_parts.append(val)
+            requirement_text = " | ".join(text_parts)
+            
+            # Build combined text for section header
+            lines: List[str] = [
+                f"Section: {object_number or 'N/A'}",
+                f"Title: {section_state.get('title', '')}",
+                f"Document: {doc_name} ({doc_type})",
+                f"Level: {level}",
+            ]
+            combined_text = "\\n".join(lines)
+            
+            record = {
+                "Req_ID": header_id,
+                "Doc_Name": doc_name,
+                "Doc_Type": doc_type,
+                "Level": level,
+                "Object_Number": object_number,
+                "Requirement_Text": requirement_text,
+                "Aliases": "",
+                "Parent_Req_IDs": "",
+                "Child_Req_IDs": "",
+                "Combined_Text": combined_text,
+                "Section_Title": section_state.get("title", ""),
+                "Section_Number": section_state.get("number", ""),
+                "Section_Type": section_state.get("type", ""),
+                "Is_Section_Header": True,  # NEW FLAG
+            }
+            
+            _apply_inference_to_record(record, spec, section_state, header_id)
+            records.append(record)
             continue
 
         # ID
@@ -1203,6 +1318,7 @@ def normalize_generic_traceable(
             "Section_Title": section_state.get("title", ""),
             "Section_Number": section_state.get("number", ""),
             "Section_Type": section_state.get("type", ""),
+            "Is_Section_Header": False,  # Regular requirement, not a section header
         }
         
         # Optional fields
@@ -1334,6 +1450,7 @@ def normalize_srs(
             "Section_Title": section_state.get("title", ""),
             "Section_Number": section_state.get("number", ""),
             "Section_Type": section_state.get("type", ""),
+            "Is_Section_Header": False,  # SRS doesn't have section headers in the same way
         }
         
         _apply_inference_to_record(record, spec, section_state, rec_id)
