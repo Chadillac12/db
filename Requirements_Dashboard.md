@@ -17,7 +17,7 @@ TABLE WITHOUT ID
   choice(Is_Section_Header, "📑 Header", "📄 Req") as "Type",
   Parents as "Parent IDs",
   Children as "Child IDs"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 SORT Section ASC, Object_Number ASC
 ```
 
@@ -34,7 +34,7 @@ TABLE WITHOUT ID
   Section_Title as "Section",
   Object_Number as "Object #",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "FCSS"
 SORT Section ASC, Object_Number ASC
 ```
@@ -46,7 +46,7 @@ TABLE WITHOUT ID
   Section_Title as "Section",
   SRS_Local_Req_No as "Local Req #",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "SRS"
 SORT Section ASC
 ```
@@ -58,7 +58,7 @@ TABLE WITHOUT ID
   Section_Title as "Section",
   Object_Number as "Object #",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "FCSRD" OR Doc_Type = "CCSRD"
 SORT Section ASC, Object_Number ASC
 ```
@@ -74,7 +74,7 @@ TABLE WITHOUT ID
   Doc_Type as "Doc",
   Section_Title as "Section",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE contains(Level, "System") OR contains(Level, "High")
 SORT Doc_Type ASC, Section ASC
 ```
@@ -86,7 +86,7 @@ TABLE WITHOUT ID
   Doc_Type as "Doc",
   Section_Title as "Section",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE contains(Level, "Software") OR contains(Level, "Low")
 SORT Doc_Type ASC, Section ASC
 ```
@@ -102,7 +102,7 @@ TABLE WITHOUT ID
   Section_Title as "Title",
   Object_Number as "Section #",
   file.link as "Details"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Section_Inferred = false AND Is_Section_Header = true
 SORT Doc_Type ASC, Object_Number ASC
 ```
@@ -119,7 +119,7 @@ TABLE WITHOUT ID
   Object_Number as "Number",
   count(rows) as "Count",
   rows.file.link as "Requirements"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "FCSS" AND Section_Title != ""
 GROUP BY Section_Title, Object_Number
 SORT Object_Number ASC
@@ -136,7 +136,7 @@ TABLE WITHOUT ID
   Section_Title as "Section",
   Parents as "Parent Requirements",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Parents != "" AND Parents != null
 SORT Req_ID ASC
 ```
@@ -148,7 +148,7 @@ TABLE WITHOUT ID
   Section_Title as "Section",
   Children as "Child Requirements",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Children != "" AND Children != null
 SORT Req_ID ASC
 ```
@@ -160,7 +160,7 @@ TABLE WITHOUT ID
   Doc_Type as "Document",
   Section_Title as "Section",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE (Parents = "" OR Parents = null) AND (Children = "" OR Children = null)
 SORT Doc_Type ASC, Req_ID ASC
 ```
@@ -176,7 +176,7 @@ TABLE WITHOUT ID
   Section_Title as "Section",
   Object_Number as "Object #",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE contains(Section_Title, "Flight Control")
 SORT Object_Number ASC
 ```
@@ -188,7 +188,7 @@ TABLE WITHOUT ID
   Doc_Type as "Document",
   Section_Title as "Section",
   file.link as "Requirement"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "FCSS" OR Doc_Type = "FCSRD"
 SORT Doc_Type ASC, Section ASC
 ```
@@ -203,7 +203,7 @@ TABLE WITHOUT ID
   Doc_Type as "Document Type",
   count(rows) as "Total Requirements",
   count(rows.Section_Title) as "With Section Context"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 GROUP BY Doc_Type
 SORT Doc_Type ASC
 ```
@@ -214,7 +214,7 @@ TABLE WITHOUT ID
   Section_Title as "Section",
   count(rows) as "Requirements",
   Doc_Type as "Document"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Section_Title != "" AND Section_Title != null
 GROUP BY Section_Title, Doc_Type
 SORT count(rows) DESC
@@ -237,7 +237,7 @@ TABLE WITHOUT ID
   Req_ID as "Requirement ID",
   Section_Title as "Section",
   file.link as "Link"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "YOUR_DOC_TYPE"
   AND Section_Title contains "YOUR_SECTION"
 SORT Req_ID ASC

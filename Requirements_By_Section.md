@@ -8,7 +8,7 @@
 ### All Sections with Their Requirements
 
 ```dataviewjs
-const pages = dv.pages('"anythingllm_md_export"')
+const pages = dv.pages('"02-CACTCS/Requirements"')
   .where(p => p.Section_Title && p.Section_Title != "");
 
 const grouped = pages
@@ -43,7 +43,7 @@ TABLE WITHOUT ID
   Section_Title as "Section Name",
   count(rows) as "Requirements",
   Doc_Type as "Document"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Section_Title != "" AND Section_Title != null
 GROUP BY Section_Title, Doc_Type
 SORT Section_Title ASC
@@ -56,7 +56,7 @@ SORT Section_Title ASC
 ### Requirements Count per Section
 
 ```dataviewjs
-const pages = dv.pages('"anythingllm_md_export"')
+const pages = dv.pages('"02-CACTCS/Requirements"')
   .where(p => p.Section_Title && p.Section_Title != "");
 
 const stats = pages
@@ -86,7 +86,7 @@ dv.table(
 ### FCSS Hierarchy
 
 ```dataviewjs
-const fcss = dv.pages('"anythingllm_md_export"')
+const fcss = dv.pages('"02-CACTCS/Requirements"')
   .where(p => p.Doc_Type == "FCSS" && p.Object_Number);
 
 // Group by top-level section (e.g., "4" from "4.1.1")

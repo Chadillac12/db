@@ -27,7 +27,7 @@ Organize your Obsidian vault as follows:
 YourVault/
 ├── Requirements_Dashboard.md          ← Master dashboard (place in root)
 ├── Requirements_By_Section.md         ← Section view (place in root)
-├── anythingllm_md_export/            ← Export folder from build script
+├── 02-CACTCS/Requirements/            ← Export folder from build script
 │   ├── FCSS/
 │   │   ├── FCSS-00001.md
 │   │   ├── FCSS-00002.md
@@ -56,7 +56,7 @@ python build_requirements_db_v2.py `
   --create-markdown
 ```
 
-This creates: `output/anythingllm_md_export/`
+This creates: `output/02-CACTCS/Requirements/`
 
 ### Step 2: Copy to Obsidian
 
@@ -103,7 +103,7 @@ In Obsidian, open:
 #### Filter by Multiple Criteria
 ```dataview
 TABLE Req_ID, Section_Title, file.link
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "FCSS" 
   AND contains(Section_Title, "Control")
   AND Level contains "System"
@@ -113,14 +113,14 @@ SORT Req_ID ASC
 #### Count Requirements by Type
 ```dataview
 TABLE Doc_Type, count(rows) as Total
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 GROUP BY Doc_Type
 ```
 
 #### Find Requirements Without Parents
 ```dataview
 TABLE Req_ID, Section_Title, file.link
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Parents = "" OR Parents = null
 SORT Req_ID
 ```
@@ -135,7 +135,7 @@ If your requirements are in a different folder, update queries:
 
 **Before:**
 ```dataview
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 ```
 
 **After:**
@@ -152,7 +152,7 @@ TABLE WITHOUT ID
   Req_ID as "ID",
   YOUR_CUSTOM_FIELD as "Custom",
   file.link as "Link"
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 ```
 
 ### Create Saved Filters
@@ -161,7 +161,7 @@ Create a new note for each filter, e.g., `Filter - FCSS Only.md`:
 
 ```dataview
 TABLE Req_ID, Section_Title, file.link
-FROM "anythingllm_md_export"
+FROM "02-CACTCS/Requirements"
 WHERE Doc_Type = "FCSS"
 SORT Section, Object_Number
 ```

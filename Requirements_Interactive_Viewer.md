@@ -18,7 +18,7 @@ try {
   const CONFIG = {
     PAGE_SIZE: 50,  // Lazy load batch size
     DEBOUNCE_MS: 300,  // Filter debounce delay
-    FOLDER_PATH: "anythingllm_md_export",  // Requirements folder
+    FOLDER_PATH: "02-CACTCS/Requirements",  // Requirements folder
     CACHE_DURATION: 60000  // 1 minute cache
   };
 

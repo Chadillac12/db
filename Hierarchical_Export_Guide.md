@@ -8,7 +8,7 @@ The `reorganize_hierarchical.py` script creates a hierarchical copy of your flat
 
 ### Before (Flat):
 ```
-anythingllm_md_export/
+02-CACTCS/Requirements/
 ├── FCSS/
 │   ├── FCSS-00001.md  (Section 1.2.3)
 │   ├── FCSS-00002.md  (Section 1.2.3-1)
@@ -131,7 +131,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host "`n✅ Export complete!" -ForegroundColor Green
-Write-Host "  Flat:         output/anythingllm_md_export/" -ForegroundColor Gray
+Write-Host "  Flat:         output/02-CACTCS/Requirements/" -ForegroundColor Gray
 Write-Host "  Hierarchical: output/anythingllm_md_export_hierarchical/" -ForegroundColor Gray
 ```
 
