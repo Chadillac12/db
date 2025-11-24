@@ -74,6 +74,8 @@ class SectionDetectionSpec:
 class InferenceSpec:
     inherit_section_context: bool = True
     infer_from_req_id: bool = False
+    infer_from_object_number: bool = False
+    infer_from_text: bool = False
     object_number_column: str = "Object Number"
     section_number_column: str = "Section_Number"
     section_title_column: str = "Section_Title"
@@ -142,6 +144,8 @@ class DocSpec:
         inference = InferenceSpec(
             inherit_section_context=inference_data.get("inherit_section_context", base_inf.inherit_section_context),
             infer_from_req_id=inference_data.get("infer_from_req_id", base_inf.infer_from_req_id),
+            infer_from_object_number=inference_data.get("infer_from_object_number", base_inf.infer_from_object_number),
+            infer_from_text=inference_data.get("infer_from_text", base_inf.infer_from_text),
             object_number_column=inference_data.get("object_number_column", base_inf.object_number_column),
             section_number_column=inference_data.get("section_number_column", base_inf.section_number_column),
             section_title_column=inference_data.get("section_title_column", base_inf.section_title_column),
@@ -642,6 +646,36 @@ def _apply_inference_to_record(
         if section_state.get("number"):
             maybe_set(inference.object_number_column, section_state.get("number", ""))
 
+    # 1. Infer from Object Number (if configured)
+    if inference.infer_from_object_number:
+        obj_num = str(record.get(inference.object_number_column, "")).strip()
+        if obj_num:
+            # Heuristic: If object number looks like "3.1.2", it might be the section number
+            maybe_set(inference.section_number_column, obj_num)
+
+    # 2. Infer from Requirement Text (if configured)
+    if inference.infer_from_text:
+        text = str(record.get("Requirement_Text", "")).strip()
+        if text:
+            # Pattern: Leading number (e.g. "1.2.3" or "1.2.3-1") followed by separator and text
+            # Regex captures: (Number) (Separator) (Rest)
+            match = re.match(r"^(\d+(?:[\.\-]\d+)*[A-Za-z]?)(?:[\.\-\s]+)(.*)$", text)
+            if match:
+                num_part = match.group(1)
+                rest_part = match.group(2).strip()
+                
+                # Set section number
+                maybe_set(inference.section_number_column, num_part)
+                
+                # Set section title if we have leftover text
+                if rest_part:
+                    maybe_set(inference.section_title_column, rest_part)
+            else:
+                # If no number found, treat entire text as potential title if short enough
+                if len(text) < 150:
+                    maybe_set(inference.section_title_column, text)
+
+    # 3. Infer from Req ID (lowest priority for section number if others exist)
     if inference.infer_from_req_id and rec_id:
         section_candidate, object_candidate = _parse_req_id_section_parts(rec_id)
         if section_candidate:

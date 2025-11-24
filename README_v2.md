@@ -68,6 +68,11 @@ schema:
       section_detection:
         type_column: "Requirement Type"
         header_types: ["Heading", "Title"]
+      inference:
+        inherit_section_context: true
+        infer_from_req_id: true
+        infer_from_object_number: true  # If true, Object Number is treated as Section Number
+        infer_from_text: true           # If true, parses "1.2.3 Title" from Requirement Text
 ```
 
 ### Inputs Section
