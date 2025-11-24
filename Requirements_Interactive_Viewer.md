@@ -521,7 +521,13 @@ try {
   Object.assign(container.style, STYLES.container);
 
   // Load all requirements pages
+  console.log("Loading pages from:", CONFIG.FOLDER_PATH);
   const pages = dv.pages(`"${CONFIG.FOLDER_PATH}"`).array();
+  console.log("Pages found:", pages.length);
+  if (pages.length === 0) {
+    console.warn("No pages found! Check folder path.");
+    dv.paragraph(`⚠️ No pages found in "${CONFIG.FOLDER_PATH}". Please check the folder path.`);
+  }
   
   // Create lookup map for parent tags
   const reqIdMap = new Map();
