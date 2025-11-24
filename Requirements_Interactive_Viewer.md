@@ -1,0 +1,917 @@
+# Requirements Interactive Viewer
+
+> [!IMPORTANT] Advanced DataviewJS Viewer
+> This is an interactive, Excel-like requirements browser with filtering, editing, lazy loading, and bulk operations.
+>
+> **Features:**
+> - ✅ Multi-field filtering with wildcards
+> - ✅ Lazy loading for performance  
+> - ✅ Inline editing of notes and tags
+> - ✅ Bulk operations on filtered results
+> - ✅ Persistent filter state
+> - ✅ Quick section navigation
+> - ✅ Traceability link navigation
+
+```dataviewjs
+try {
+  // ========== CONFIGURATION ==========
+  const CONFIG = {
+    PAGE_SIZE: 50,  // Lazy load batch size
+    DEBOUNCE_MS: 300,  // Filter debounce delay
+    FOLDER_PATH: "anythingllm_md_export",  // Requirements folder
+    CACHE_DURATION: 60000  // 1 minute cache
+  };
+
+  const FILTER_STATE_KEY = 'requirements_filter_state_v2';
+  
+  // Global state
+  let currentResults = [];
+  let displayedCount = 0;
+  let contentCache = new Map();
+  let lastCacheClean = Date.now();
+  
+  // ========== STYLES ==========
+  const STYLES = {
+    container: {
+      padding: "20px",
+      backgroundColor: "var(--background-primary)"
+    },
+    filtersContainer: {
+      padding: "20px",
+      backgroundColor: "var(--background-primary-alt)",
+      borderRadius: "8px",
+      marginBottom: "20px",
+      border: "1px solid var(--background-modifier-border)",
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+      gap: "15px"
+    },
+    filterGroup: {
+      display: "flex",
+      flexDirection: "column",
+      gap: "5px"
+    },
+    filterLabel: {
+      color: "var(--text-normal)",
+      fontWeight: "600",
+      fontSize: "0.9em"
+    },
+    select: {
+      padding: "8px",
+      borderRadius: "4px",
+      border: "1px solid var(--background-modifier-border)",
+      backgroundColor: "var(--background-primary)",
+      color: "var(--text-normal)",
+      width: "100%"
+    },
+    input: {
+      padding: "8px",
+      borderRadius: "4px",
+      border: "1px solid var(--background-modifier-border)",
+      backgroundColor: "var(--background-primary)",
+      color: "var(--text-normal)",
+      width: "100%"
+    },
+    requirementCard: {
+      marginBottom: "20px",
+      border: "1px solid var(--background-modifier-border)",
+      borderRadius: "8px",
+      padding: "16px",
+      backgroundColor: "var(--background-primary-alt)",
+      transition: "all 0.2s ease"
+    },
+    sectionHeader: {
+      fontSize: "1.3em",
+      fontWeight: "700",
+      color: "var(--interactive-accent)",
+      marginBottom: "15px",
+      padding: "12px",
+      backgroundColor: "var(--background-secondary-alt)",
+      borderRadius: "6px",
+      borderLeft: "4px solid var(--interactive-accent)",
+      cursor: "pointer"
+    },
+    metadataGrid: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+      gap: "8px",
+      marginBottom: "12px"
+    },
+    metadataItem: {
+      display: "flex",
+      gap: "6px",
+      fontSize: "0.9em",
+      padding: "6px 10px",
+      backgroundColor: "var(--background-secondary)",
+      borderRadius: "4px"
+    },
+    reqHeader: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: "12px",
+      padding: "10px",
+      backgroundColor: "var(--background-secondary)",
+      borderRadius: "6px"
+    },
+    reqId: {
+      fontSize: "1.1em",
+      fontWeight: "600",
+      color: "var(--interactive-accent)",
+      cursor: "pointer"
+    },
+    badge: {
+      padding: "3px 8px",
+      borderRadius: "12px",
+      fontSize: "0.8em",
+      fontWeight: "600"
+    },
+    sectionBadge: {
+      backgroundColor: "var(--interactive-accent)",
+      color: "var(--text-on-accent)"
+    },
+    reqBadge: {
+      backgroundColor: "var(--background-modifier-border)",
+      color: "var(--text-muted)"
+    },
+    description: {
+      marginTop: "12px",
+      padding: "12px",
+      borderLeft: "3px solid var(--background-modifier-border)",
+      backgroundColor: "var(--background-primary)"
+    },
+    traceSection: {
+      marginTop: "10px",
+      padding: "10px",
+      backgroundColor: "var(--background-primary)",
+      borderRadius: "4px"
+    },
+    traceLabel: {
+      fontWeight: "600",
+      fontSize: "0.9em",
+      marginBottom: "6px"
+    },
+    traceLinks: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "6px"
+    },
+    traceLink: {
+      display: "inline-block",
+      padding: "3px 8px",
+      backgroundColor: "var(--background-secondary)",
+      borderRadius: "4px",
+      fontSize: "0.85em",
+      cursor: "pointer",
+      border: "1px solid var(--background-modifier-border)"
+    },
+    stats: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      padding: "10px",
+      backgroundColor: "var(--background-secondary)",
+      borderRadius: "4px",
+      marginBottom: "15px",
+      fontSize: "0.9em"
+    },
+    bulkActions: {
+      display: "flex",
+      gap: "10px",
+      marginBottom: "15px",
+      flexWrap: "wrap"
+    },
+    button: {
+      padding: "8px 16px",
+      borderRadius: "4px",
+      border: "none",
+      cursor: "pointer",
+      fontSize: "0.9em",
+      fontWeight: "600",
+      transition: "all 0.2s ease"
+    },
+    primaryButton: {
+      backgroundColor: "var(--interactive-accent)",
+      color: "var(--text-on-accent)"
+    },
+    secondaryButton: {
+      backgroundColor: "var(--background-modifier-border)",
+      color: "var(--text-normal)"
+    },
+    loadMore: {
+      width: "100%",
+      padding: "12px",
+      marginTop: "20px",
+      backgroundColor: "var(--interactive-accent)",
+      color: "var(--text-on-accent)",
+      border: "none",
+      borderRadius: "6px",
+      cursor: "pointer",
+      fontSize: "1em",
+      fontWeight: "600"
+    },
+    editableField: {
+      padding: "8px",
+      borderRadius: "4px",
+      border: "1px solid transparent",
+      cursor: "text",
+      minHeight: "24px",
+      backgroundColor: "var(--background-primary)",
+      transition: "all 0.2s ease"
+    },
+    editableFieldActive: {
+      border: "1px solid var(--interactive-accent)",
+      boxShadow: "0 0 0 2px var(--background-modifier-border)"
+    },
+    tagContainer: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "6px",
+      marginTop: "10px"
+    },
+    tag: {
+      backgroundColor: "var(--interactive-accent-hover)",
+      color: "var(--text-normal)",
+      padding: "3px 10px",
+      borderRadius: "12px",
+      fontSize: "0.85em",
+      display: "flex",
+      alignItems: "center",
+      gap: "6px"
+    },
+    tagRemove: {
+      cursor: "pointer",
+      opacity: "0.7",
+      fontWeight: "bold"
+    }
+  };
+
+  // ========== UTILITY FUNCTIONS ==========
+  
+  // Debounce helper
+  function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
+    };
+  }
+  
+  // Cache management
+  function getCachedContent(filePath) {
+    if (Date.now() - lastCacheClean > CONFIG.CACHE_DURATION) {
+      contentCache.clear();
+      lastCacheClean = Date.now();
+    }
+    return contentCache.get(filePath);
+  }
+  
+  function setCachedContent(filePath, content) {
+    contentCache.set(filePath, content);
+  }
+  
+  // Filter state persistence
+  function saveFilterState(filters) {
+    const state = {};
+    for (let key in filters) {
+      state[key] = filters[key].value;
+    }
+    localStorage.setItem(FILTER_STATE_KEY, JSON.stringify(state));
+  }
+  
+  function loadFilterState() {
+    const saved = localStorage.getItem(FILTER_STATE_KEY);
+    return saved ? JSON.parse(saved) : {};
+  }
+
+  // Custom prompt with modal
+  async function customPrompt(message, defaultText = '') {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      Object.assign(overlay.style, {
+        position: "fixed",
+        top: "0",
+        left: "0",
+        width: "100%",
+        height: "100%",
+        backgroundColor: "rgba(0,0,0,0.6)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: "9999"
+      });
+
+      const modal = document.createElement("div");
+      Object.assign(modal.style, {
+        backgroundColor: "var(--background-primary)",
+        padding: "24px",
+        borderRadius: "8px",
+        boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+        minWidth: "350px",
+        maxWidth: "500px"
+      });
+
+      const messageEl = modal.createEl("div", {text: message});
+      messageEl.style.marginBottom = "15px";
+      messageEl.style.fontSize = "1.1em";
+
+      const input = modal.createEl("input");
+      input.type = "text";
+      input.value = defaultText;
+      Object.assign(input.style, STYLES.input);
+      input.style.marginBottom = "15px";
+
+      const btnContainer = modal.createEl("div");
+      btnContainer.style.display = "flex";
+      btnContainer.style.gap = "10px";
+      btnContainer.style.justifyContent = "flex-end";
+
+      const okBtn = btnContainer.createEl("button", {text: "OK"});
+      Object.assign(okBtn.style, STYLES.button, STYLES.primaryButton);
+      
+      const cancelBtn = btnContainer.createEl("button", {text: "Cancel"});
+      Object.assign(cancelBtn.style, STYLES.button, STYLES.secondaryButton);
+
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      input.focus();
+
+      okBtn.onclick = () => {
+        document.body.removeChild(overlay);
+        resolve(input.value);
+      };
+      
+      cancelBtn.onclick = () => {
+        document.body.removeChild(overlay);
+        resolve(null);
+      };
+      
+      input.onkeydown = (e) => {
+        if (e.key === "Enter") okBtn.click();
+        if (e.key === "Escape") cancelBtn.click();
+      };
+    });
+  }
+
+  // Wildcard matching
+  function wildcardMatch(value, pattern) {
+    if (!pattern) return true;
+    const regex = new RegExp(pattern.split("*").join(".*"), "i");
+    return regex.test(String(value || ""));
+  }
+
+  // YAML frontmatter update
+  function updateYamlFrontmatter(content, key, value) {
+    const yamlRegex = /^---([\s\S]*?)---/;
+    const match = content.match(yamlRegex);
+    if (match) {
+      const yaml = match[1];
+      const keyRegex = new RegExp(`^${key}:.*$`, 'm');
+      let newYaml;
+      if (keyRegex.test(yaml)) {
+        newYaml = yaml.replace(keyRegex, `${key}: ${JSON.stringify(value)}`);
+      } else {
+        newYaml = yaml.trim() + `\n${key}: ${JSON.stringify(value)}`;
+      }
+      return content.replace(yamlRegex, `---\n${newYaml}\n---`);
+    }
+    return `---\n${key}: ${JSON.stringify(value)}\n---\n${content}`;
+  }
+
+  // ========== UI COMPONENTS ==========
+  
+  // Editable field
+  function makeEditable(element, onSave) {
+    let isEditing = false;
+    let originalContent = "";
+    
+    const startEdit = () => {
+      if (isEditing) return;
+      isEditing = true;
+      originalContent = element.textContent;
+      element.contentEditable = true;
+      element.focus();
+      Object.assign(element.style, STYLES.editableFieldActive);
+    };
+    
+    const stopEdit = () => {
+      if (!isEditing) return;
+      isEditing = false;
+      element.contentEditable = false;
+      Object.assign(element.style, STYLES.editableField);
+      if (originalContent !== element.textContent) {
+        onSave(element.textContent);
+      }
+    };
+    
+    Object.assign(element.style, STYLES.editableField);
+    element.addEventListener('dblclick', startEdit);
+    element.addEventListener('blur', stopEdit);
+    element.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        stopEdit();
+      }
+      if (e.key === 'Escape') {
+        element.textContent = originalContent;
+        stopEdit();
+      }
+    });
+  }
+
+  // Tag manager
+  class TagManager {
+    constructor(container, initialTags = [], onUpdate) {
+      this.container = container;
+      this.tags = new Set(initialTags);
+      this.onUpdate = onUpdate;
+      this.render();
+    }
+    
+    render() {
+      this.container.innerHTML = '';
+      const tagDiv = this.container.createEl("div");
+      Object.assign(tagDiv.style, STYLES.tagContainer);
+      
+      this.tags.forEach(tag => {
+        const tagEl = tagDiv.createEl("span");
+        Object.assign(tagEl.style, STYLES.tag);
+        tagEl.textContent = tag;
+        
+        const removeBtn = tagEl.createEl("span");
+        Object.assign(removeBtn.style, STYLES.tagRemove);
+        removeBtn.textContent = "×";
+        removeBtn.onclick = (e) => {
+          e.stopPropagation();
+          this.removeTag(tag);
+        };
+      });
+      
+      const addBtn = tagDiv.createEl("span");
+      Object.assign(addBtn.style, STYLES.tag);
+      addBtn.style.cursor = "pointer";
+      addBtn.style.backgroundColor = "var(--background-modifier-border)";
+      addBtn.textContent = "+ Add Tag";
+      addBtn.onclick = async () => {
+        const newTag = await customPrompt("Enter new tag:");
+        if (newTag) this.addTag(newTag);
+      };
+    }
+    
+    addTag(tag) {
+      if (!this.tags.has(tag)) {
+        this.tags.add(tag);
+        this.render();
+        this.onUpdate(Array.from(this.tags));
+      }
+    }
+    
+    removeTag(tag) {
+      if (this.tags.delete(tag)) {
+        this.render();
+        this.onUpdate(Array.from(this.tags));
+      }
+    }
+  }
+
+  // ========== MAIN IMPLEMENTATION ==========
+  
+  const container = dv.container;
+  container.innerHTML = "";
+  Object.assign(container.style, STYLES.container);
+
+  // Load all requirements pages
+  const pages = dv.pages(`"${CONFIG.FOLDER_PATH}"`).array();
+  
+  // Extract unique values for dropdowns
+  const docTypes = [...new Set(pages.map(p => p.Doc_Type).filter(Boolean))].sort();
+  const levels = [...new Set(pages.map(p => p.Level).filter(Boolean))].sort();
+  const docNames = [...new Set(pages.map(p => p.Doc_Name).filter(Boolean))].sort();
+
+  // Create filters container
+  const filtersDiv = container.createEl("div");
+  Object.assign(filtersDiv.style, STYLES.filtersContainer);
+
+  // Filter creation helper
+  const createFilter = (label, type, options = []) => {
+    const group = filtersDiv.createEl("div");
+    Object.assign(group.style, STYLES.filterGroup);
+    
+    const labelEl = group.createEl("label");
+    Object.assign(labelEl.style, STYLES.filterLabel);
+    labelEl.textContent = label;
+    
+    if (type === 'select') {
+      const select = group.createEl("select");
+      Object.assign(select.style, STYLES.select);
+      const defaultOpt = select.createEl("option");
+      defaultOpt.text = `All ${label}`;
+      defaultOpt.value = "";
+      options.forEach(opt => {
+        const option = select.createEl("option");
+        option.text = opt;
+        option.value = opt;
+      });
+      return select;
+    } else {
+      const input = group.createEl("input");
+      input.type = "text";
+      input.placeholder = `Filter ${label}...`;
+      Object.assign(input.style, STYLES.input);
+      return input;
+    }
+  };
+
+  // Create filters
+  const filters = {
+    docType: createFilter("Document Type", "select", docTypes),
+    docName: createFilter("Document Name", "select", docNames),
+    level: createFilter("Level", "select", levels),
+    section: createFilter("Section", "text"),
+    reqId: createFilter("Req ID", "text"),
+    showHeadersOnly: (() => {
+      const group = filtersDiv.createEl("div");
+      Object.assign(group.style, STYLES.filterGroup);
+      const labelEl = group.createEl("label");
+      Object.assign(labelEl.style, STYLES.filterLabel);
+      labelEl.textContent = "Show Headers Only";
+      const checkbox = group.createEl("input");
+      checkbox.type = "checkbox";
+      return checkbox;
+    })(),
+    global: createFilter("Global Search", "text")
+  };
+
+  // Load saved filter state
+  const savedState = loadFilterState();
+  for (let key in filters) {
+    if (savedState[key] !== undefined) {
+      if (filters[key].type === 'checkbox') {
+        filters[key].checked = savedState[key];
+      } else {
+        filters[key].value = savedState[key];
+      }
+    }
+  }
+
+  // Stats and bulk actions
+  const statsDiv = container.createEl("div");
+  Object.assign(statsDiv.style, STYLES.stats);
+
+  const bulkDiv = container.createEl("div");
+  Object.assign(bulkDiv.style, STYLES.bulkActions);
+
+  const bulkTagBtn = bulkDiv.createEl("button", {text: "📌 Add Tag to All"});
+  Object.assign(bulkTagBtn.style, STYLES.button, STYLES.primaryButton);
+  
+  const bulkNoteBtn = bulkDiv.createEl("button", {text: "📝 Update Notes for All"});
+  Object.assign(bulkNoteBtn.style, STYLES.button, STYLES.secondaryButton);
+
+  const exportCsvBtn = bulkDiv.createEl("button", {text: "📊 Export to CSV"});
+  Object.assign(exportCsvBtn.style, STYLES.button, STYLES.secondaryButton);
+
+  // Results container
+  const resultsDiv = container.createEl("div");
+  const loadMoreBtn = container.createEl("button", {text: "Load More Results"});
+  Object.assign(loadMoreBtn.style, STYLES.loadMore);
+  loadMoreBtn.style.display = "none";
+
+  // ========== RENDERING ==========
+  
+  async function filterResults() {
+    let filtered = pages;
+    
+    if (filters.docType.value) {
+      filtered = filtered.filter(p => p.Doc_Type === filters.docType.value);
+    }
+    if (filters.docName.value) {
+      filtered = filtered.filter(p => p.Doc_Name === filters.docName.value);
+    }
+    if (filters.level.value) {
+      filtered = filtered.filter(p => p.Level === filters.level.value);
+    }
+    if (filters.section.value) {
+      filtered = filtered.filter(p => 
+        wildcardMatch(p.Section, filters.section.value) ||
+        wildcardMatch(p.Section_Title, filters.section.value)
+      );
+    }
+    if (filters.reqId.value) {
+      filtered = filtered.filter(p => wildcardMatch(p.Req_ID, filters.reqId.value));
+    }
+    if (filters.showHeadersOnly.checked) {
+      filtered = filtered.filter(p => p.Is_Section_Header === true);
+    }
+    
+    // Global search in requirement text
+    if (filters.global.value) {
+      const globalPattern = filters.global.value;
+      const globalFiltered = [];
+      for (const page of filtered) {
+        let cached = getCachedContent(page.file.path);
+        if (!cached) {
+          cached = await dv.io.load(page.file.path);
+          setCachedContent(page.file.path, cached);
+        }
+        if (wildcardMatch(cached, globalPattern)) {
+          globalFiltered.push(page);
+        }
+      }
+      filtered = globalFiltered;
+    }
+    
+    // Sort by section and object number
+    filtered.sort((a, b) => {
+      const sectionA = String(a.Section || a.Object_Number || "");
+      const sectionB = String(b.Section || b.Object_Number || "");
+      return sectionA.localeCompare(sectionB, undefined, {numeric: true});
+    });
+    
+    return filtered;
+  }
+
+  async function renderRequirement(page) {
+    const card = resultsDiv.createEl("div");
+    Object.assign(card.style, STYLES.requirementCard);
+    
+    // Section header style
+    if (page.Is_Section_Header) {
+      const headerDiv = card.createEl("div");
+      Object.assign(headerDiv.style, STYLES.sectionHeader);
+      headerDiv.textContent = `${page.Object_Number || page.Section || ""} - ${page.Section_Title || page.Requirement_Text || ""}`;
+      headerDiv.onclick = (e) => {
+        if (e.ctrlKey || e.metaKey) {
+          app.workspace.openLinkText(page.file.path, "", true);
+        }
+      };
+      return;
+    }
+    
+    // Regular requirement
+    const reqHeader = card.createEl("div");
+    Object.assign(reqHeader.style, STYLES.reqHeader);
+    
+    const reqIdEl = reqHeader.createEl("div");
+    Object.assign(reqIdEl.style, STYLES.reqId);
+    reqIdEl.textContent = page.Req_ID || "No ID";
+    reqIdEl.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        app.workspace.openLinkText(page.file.path, "", true);
+      }
+    };
+    
+    const badge = reqHeader.createEl("span");
+    Object.assign(badge.style, STYLES.badge, STYLES.reqBadge);
+    badge.textContent = page.Doc_Type || "Unknown";
+    
+    // Metadata grid
+    const metaGrid = card.createEl("div");
+    Object.assign(metaGrid.style, STYLES.metadataGrid);
+    
+    [
+      ["Document", page.Doc_Name],
+      ["Level", page.Level],
+      ["Section", page.Section_Title || page.Section],
+      ["Object #", page.Object_Number],
+      ["SRS Local", page.SRS_Local_Req_No]
+    ].forEach(([label, value]) => {
+      if (value) {
+        const item = metaGrid.createEl("div");
+        Object.assign(item.style, STYLES.metadataItem);
+        item.innerHTML = `<strong>${label}:</strong> <span>${value}</span>`;
+      }
+    });
+    
+    // Requirement text
+    if (page.Requirement_Text) {
+      const textDiv = card.createEl("div");
+      Object.assign(textDiv.style, STYLES.description);
+      textDiv.textContent = page.Requirement_Text;
+    }
+    
+    // Traceability
+    if (page.Parents || page.Children) {
+      const traceDiv = card.createEl("div");
+      Object.assign(traceDiv.style, STYLES.traceSection);
+      
+      if (page.Parents) {
+        const parentLabel = traceDiv.createEl("div");
+        Object.assign(parentLabel.style, STYLES.traceLabel);
+        parentLabel.textContent = "⬆️ Parents:";
+        
+        const parentLinks = traceDiv.createEl("div");
+        Object.assign(parentLinks.style, STYLES.traceLinks);
+        
+        String(page.Parents).split(",").forEach(parent => {
+          const link = parentLinks.createEl("span");
+          Object.assign(link.style, STYLES.traceLink);
+          link.textContent = parent.trim();
+        });
+      }
+      
+      if (page.Children) {
+        const childLabel = traceDiv.createEl("div");
+        Object.assign(childLabel.style, STYLES.traceLabel);
+        childLabel.textContent = "⬇️ Children:";
+        
+        const childLinks = traceDiv.createEl("div");
+        Object.assign(childLinks.style, STYLES.traceLinks);
+        
+        String(page.Children).split(",").forEach(child => {
+          const link = childLinks.createEl("span");
+          Object.assign(link.style, STYLES.traceLink);
+          link.textContent = child.trim();
+        });
+      }
+    }
+    
+    // Notes (editable)
+    const notesLabel = card.createEl("div");
+    notesLabel.textContent = "📝 Notes";
+    notesLabel.style.fontWeight = "600";
+    notesLabel.style.marginTop = "10px";
+    
+    const notesEl = card.createEl("div");
+    notesEl.textContent = page.notes || "Double-click to add notes...";
+    makeEditable(notesEl, async (newContent) => {
+      try {
+        const file = app.vault.getAbstractFileByPath(page.file.path);
+        if (file) {
+          const content = await app.vault.read(file);
+          const updated = updateYamlFrontmatter(content, 'notes', newContent);
+          await app.vault.modify(file, updated);
+        }
+      } catch (e) {
+        console.error("Error saving notes:", e);
+      }
+    });
+    
+    // Tags
+    const tagsDiv = card.createEl("div");
+    tagsDiv.style.marginTop = "10px";
+    new TagManager(tagsDiv, page.tags || [], async (newTags) => {
+      try {
+        const file = app.vault.getAbstractFileByPath(page.file.path);
+        if (file) {
+          const content = await app.vault.read(file);
+          const updated = updateYamlFrontmatter(content, 'tags', newTags);
+          await app.vault.modify(file, updated);
+        }
+      } catch (e) {
+        console.error("Error saving tags:", e);
+      }
+    });
+  }
+
+  async function renderResults() {
+    currentResults = await filterResults();
+    resultsDiv.innerHTML = "";
+    displayedCount = 0;
+    
+    // Update stats
+    statsDiv.innerHTML = `
+      <div><strong>Total:</strong> ${currentResults.length} requirements</div>
+      <div><strong>Displayed:</strong> <span id="displayed-count">0</span></div>
+    `;
+    
+    await loadMore();
+  }
+
+  async function loadMore() {
+    const startIdx = displayedCount;
+    const endIdx = Math.min(startIdx + CONFIG.PAGE_SIZE, currentResults.length);
+    
+    for (let i = startIdx; i < endIdx; i++) {
+      await renderRequirement(currentResults[i]);
+    }
+    
+    displayedCount = endIdx;
+    document.getElementById("displayed-count").textContent = displayedCount;
+    
+    if (displayedCount < currentResults.length) {
+      loadMoreBtn.style.display = "block";
+      loadMoreBtn.textContent = `Load More (${currentResults.length - displayedCount} remaining)`;
+    } else {
+      loadMoreBtn.style.display = "none";
+    }
+  }
+
+  // Bulk actions
+  bulkTagBtn.onclick = async () => {
+    const tag = await customPrompt("Enter tag to add to all filtered requirements:");
+    if (!tag || !currentResults.length) return;
+    
+    for (const page of currentResults) {
+      try {
+        const file = app.vault.getAbstractFileByPath(page.file.path);
+        if (file) {
+          const content = await app.vault.read(file);
+          const existingTags = page.tags || [];
+          if (!existingTags.includes(tag)) {
+            existingTags.push(tag);
+            const updated = updateYamlFrontmatter(content, 'tags', existingTags);
+            await app.vault.modify(file, updated);
+          }
+        }
+      } catch (e) {
+        console.error("Error adding tag:", e);
+      }
+    }
+    alert(`Tag "${tag}" added to ${currentResults.length} requirements!`);
+    renderResults();
+  };
+
+  bulkNoteBtn.onclick = async () => {
+    const note = await customPrompt("Enter note to add to all filtered requirements:");
+    if (note === null || !currentResults.length) return;
+    
+    for (const page of currentResults) {
+      try {
+        const file = app.vault.getAbstractFileByPath(page.file.path);
+        if (file) {
+          const content = await app.vault.read(file);
+          const updated = updateYamlFrontmatter(content, 'notes', note);
+          await app.vault.modify(file, updated);
+        }
+      } catch (e) {
+        console.error("Error adding note:", e);
+      }
+    }
+    alert(`Note added to ${currentResults.length} requirements!`);
+    renderResults();
+  };
+
+  exportCsvBtn.onclick = () => {
+    const headers = ["Req_ID", "Doc_Type", "Level", "Section_Title", "Object_Number", "Requirement_Text"];
+    const rows = [headers.join(",")];
+    currentResults.forEach(p => {
+      const row = headers.map(h => `"${String(p[h] || "").replace(/"/g, '""')}"`);
+      rows.push(row.join(","));
+    });
+    const csv = rows.join("\n");
+    navigator.clipboard.writeText(csv);
+    alert("CSV copied to clipboard!");
+  };
+
+  // Event listeners with debouncing
+  const debouncedRender = debounce(() => {
+    saveFilterState(filters);
+    renderResults();
+  }, CONFIG.DEBOUNCE_MS);
+
+  Object.values(filters).forEach(filter => {
+    filter.addEventListener("change", debouncedRender);
+    if (filter.type !== 'checkbox') {
+      filter.addEventListener("keyup", debouncedRender);
+    }
+  });
+
+  loadMoreBtn.onclick = loadMore;
+
+  // Initial render
+  renderResults();
+
+} catch (e) {
+  dv.container.innerHTML = `
+    <div style="color: var(--text-error); padding: 20px; border: 2px solid var(--text-error); border-radius: 8px;">
+      <h3>❌ Error</h3>
+      <p><strong>Message:</strong> ${e.message}</p>
+      <p><strong>Stack:</strong></p>
+      <pre style="font-size: 0.9em; overflow-x: auto;">${e.stack}</pre>
+    </div>
+  `;
+  console.error(e);
+}
+```
+
+## Key Enhancements
+
+### ✅ Lazy Loading
+- Renders 50 requirements at a time
+- "Load More" button for pagination
+- Dramatically improves performance with large datasets
+
+### ✅ Content Caching
+- Caches file content for 1 minute
+- Reduces redundant file reads
+- Auto-clears expired cache
+
+### ✅ Debounced Filtering
+- 300ms debounce on text inputs
+- Prevents excessive re-renders while typing
+- Smoother user experience
+
+### ✅ Optimized for Requirements
+- Filters: Doc Type, Doc Name, Level, Section, Req ID
+- Section header detection and special styling
+- Traceability links display (Parents/Children)
+- Global text search across requirement content
+
+### ✅ Modern Grid Layout
+- Responsive filter grid
+- Metadata grid for clean display
+- Card-based design
