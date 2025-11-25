@@ -606,6 +606,17 @@ try {
   const exportCsvBtn = bulkDiv.createEl("button", {text: "📊 Export to CSV"});
   Object.assign(exportCsvBtn.style, STYLES.button, STYLES.secondaryButton);
 
+  const exportCanvasBtn = bulkDiv.createEl("button", {text: "🎨 Export to Canvas"});
+  Object.assign(exportCanvasBtn.style, STYLES.button, STYLES.secondaryButton);
+  exportCanvasBtn.onclick = async () => {
+    const results = await filterResults();
+    if (results.length > 200) {
+      const confirm = await customPrompt(`Warning: You are about to export ${results.length} cards to a canvas. This might be slow. Type 'yes' to proceed:`);
+      if (confirm !== 'yes') return;
+    }
+    await exportToCanvas(results);
+  };
+
   // Results container
   const resultsDiv = container.createEl("div");
   const loadMoreBtn = container.createEl("button", {text: "Load More Results"});
@@ -714,7 +725,34 @@ try {
     });
     
     // Requirement text
-    if (page.Requirement_Text) {
+    let reqText = page.Requirement_Text;
+    
+    // Fallback: If no YAML text, try to read from file content
+    if (!reqText) {
+      let content = getCachedContent(page.file.path);
+      if (!content) {
+        // This is async, but we can't await inside the render loop easily without slowing things down.
+        // For now, we'll trigger a load and re-render if needed, or just show a placeholder.
+        // Better approach: Load content on demand if missing.
+        try {
+           const rawContent = await dv.io.load(page.file.path);
+           setCachedContent(page.file.path, rawContent);
+           content = rawContent;
+        } catch (e) {
+           console.error("Failed to load content for", page.file.path, e);
+        }
+      }
+      
+      if (content) {
+        // Extract text between "## Requirement Text" and the next header or end of file
+        const match = content.match(/## Requirement Text\s*\n([\s\S]*?)(?=\n## |$)/);
+        if (match) {
+          reqText = match[1].trim();
+        }
+      }
+    }
+
+    if (reqText) {
       if (CONFIG.SHOW_REQ_TEXT_HEADER) {
         const textHeader = card.createEl("div");
         Object.assign(textHeader.style, STYLES.descriptionHeader);
@@ -723,7 +761,7 @@ try {
       
       const textDiv = card.createEl("div");
       Object.assign(textDiv.style, STYLES.description);
-      textDiv.textContent = page.Requirement_Text;
+      textDiv.textContent = reqText;
     }
     
     // Traceability
