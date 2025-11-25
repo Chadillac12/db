@@ -789,6 +789,52 @@ try {
         });
       }
     }
+    
+    // Notes (editable)
+    const notesLabel = card.createEl("div");
+    notesLabel.textContent = "📝 Notes";
+    notesLabel.style.fontWeight = "600";
+    notesLabel.style.marginTop = "10px";
+    
+    const notesEl = card.createEl("div");
+    notesEl.textContent = page.notes || "Double-click to add notes...";
+    makeEditable(notesEl, async (newContent) => {
+      try {
+        const file = app.vault.getAbstractFileByPath(page.file.path);
+        if (file) {
+          await app.fileManager.processFrontMatter(file, (frontmatter) => {
+            frontmatter["notes"] = newContent;
+          });
+        }
+      } catch (e) {
+        console.error("Error saving notes:", e);
+      }
+    });
+    
+    // Tags
+    const tagsDiv = card.createEl("div");
+    tagsDiv.style.marginTop = "10px";
+    new TagManager(tagsDiv, page.tags || [], async (newTags) => {
+      try {
+        const file = app.vault.getAbstractFileByPath(page.file.path);
+        if (file) {
+          await app.fileManager.processFrontMatter(file, (frontmatter) => {
+            frontmatter["tags"] = newTags;
+          });
+        }
+      } catch (e) {
+        console.error("Error saving tags:", e);
+      }
+    });
+  }
+
+  async function renderResults() {
+    currentResults = await filterResults();
+    resultsDiv.innerHTML = "";
+    displayedCount = 0;
+    
+    // Update stats
+    statsDiv.innerHTML = `
       <div><strong>Total:</strong> ${currentResults.length} requirements</div>
       <div><strong>Displayed:</strong> <span id="displayed-count">0</span></div>
     `;
