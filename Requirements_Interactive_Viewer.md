@@ -20,6 +20,7 @@ try {
     DEBOUNCE_MS: 300,  // Filter debounce delay
     FOLDER_PATH: "02-CACTCS/Requirements",  // Requirements folder
     CACHE_DURATION: 60000,  // 1 minute cache
+    CANVAS_EXPORT_PATH: "Canvas Exports",
     // Display Configuration
     SHOW_PARENT_TAGS: true,
     SHOW_REQ_TEXT_HEADER: true,
