@@ -425,19 +425,20 @@ try {
     const X_RIGHT = (CARD_WIDTH + GAP_X);
 
     // Track added nodes to avoid duplicates
-    const addedNodeIds = new Set();
+    const nodeMap = new Map(); // file.path -> node.id
     
     // Helper to add a node
     const addNode = (page, x, y, color = null) => {
-      const id = `node-${page.file.path}`; // Use file path as stable ID
-      if (addedNodeIds.has(id)) return id; // Return existing ID if already added
+      if (nodeMap.has(page.file.path)) return nodeMap.get(page.file.path);
       
-      addedNodeIds.add(id);
+      // Generate a safe, unique ID (Obsidian Canvas prefers short hex strings)
+      const id = 'n' + Math.random().toString(36).substr(2, 9);
+      nodeMap.set(page.file.path, id);
+      
       nodes.push({
         id: id,
         type: "file",
         file: page.file.path,
-        subpath: "#Combined",
         x: x,
         y: y,
         width: CARD_WIDTH,
