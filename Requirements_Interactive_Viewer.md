@@ -400,6 +400,128 @@ try {
     return regex.test(String(value || ""));
   }
 
+  // Canvas Export Logic
+  async function exportToCanvas(filteredPages) {
+    // 1. Ask user for options
+    const includeParents = await customPrompt("Include Parent Requirements? (yes/no)", "yes");
+    const includeChildren = await customPrompt("Include Child Requirements? (yes/no)", "yes");
+    
+    const showParents = (includeParents || "").toLowerCase().startsWith("y");
+    const showChildren = (includeChildren || "").toLowerCase().startsWith("y");
+
+    const nodes = [];
+    const edges = [];
+    
+    // Layout Constants
+    const CARD_WIDTH = 400;
+    const CARD_HEIGHT = 400;
+    const GAP_X = 200; // Horizontal gap between columns
+    const GAP_Y = 50;  // Vertical gap between cards
+    
+    // Column X positions (Center is 0)
+    const X_CENTER = 0;
+    const X_LEFT = -(CARD_WIDTH + GAP_X);
+    const X_RIGHT = (CARD_WIDTH + GAP_X);
+
+    // Track added nodes to avoid duplicates
+    const addedNodeIds = new Set();
+    
+    // Helper to add a node
+    const addNode = (page, x, y, color = null) => {
+      const id = `node-${page.file.path}`; // Use file path as stable ID
+      if (addedNodeIds.has(id)) return id; // Return existing ID if already added
+      
+      addedNodeIds.add(id);
+      nodes.push({
+        id: id,
+        type: "file",
+        file: page.file.path,
+        subpath: "#Combined",
+        x: x,
+        y: y,
+        width: CARD_WIDTH,
+        height: CARD_HEIGHT,
+        color: color // Optional color
+      });
+      return id;
+    };
+
+    // Helper to add an edge
+    const addEdge = (fromId, toId, color = null) => {
+      const edgeId = `edge-${fromId}-${toId}`;
+      edges.push({
+        id: edgeId,
+        fromNode: fromId,
+        fromSide: "right",
+        toNode: toId,
+        toSide: "left",
+        color: color
+      });
+    };
+
+    // 2. Process Core Nodes (Center Column)
+    // We'll stack them vertically
+    let currentY = 0;
+    
+    for (const page of filteredPages) {
+      const coreId = addNode(page, X_CENTER, currentY, "1"); // Color 1 = Red/Default
+      
+      // 3. Process Parents (Left Column)
+      if (showParents && page.Parents) {
+        const parents = String(page.Parents).split(",").map(p => p.trim()).filter(Boolean);
+        let parentY = currentY; // Align roughly with the core node
+        
+        for (const parentId of parents) {
+          const parentPage = reqIdMap.get(parentId);
+          if (parentPage) {
+            const pId = addNode(parentPage, X_LEFT, parentY, "4"); // Color 4 = Blue
+            addEdge(pId, coreId, "4");
+            parentY += GAP_Y + 50; // Stagger if multiple parents
+          }
+        }
+      }
+
+      // 4. Process Children (Right Column)
+      if (showChildren && page.Children) {
+        const children = String(page.Children).split(",").map(p => p.trim()).filter(Boolean);
+        let childY = currentY;
+        
+        for (const childId of children) {
+          const childPage = reqIdMap.get(childId);
+          if (childPage) {
+            const cId = addNode(childPage, X_RIGHT, childY, "5"); // Color 5 = Cyan/Green
+            addEdge(coreId, cId, "5");
+            childY += GAP_Y + 50;
+          }
+        }
+      }
+      
+      currentY += CARD_HEIGHT + GAP_Y;
+    }
+
+    const canvasData = {
+      nodes: nodes,
+      edges: edges
+    };
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `Requirements_Trace_${timestamp}.canvas`;
+    const folderPath = CONFIG.CANVAS_EXPORT_PATH;
+    const fullPath = `${folderPath}/${filename}`;
+
+    try {
+      if (!await app.vault.adapter.exists(folderPath)) {
+        await app.vault.createFolder(folderPath);
+      }
+      
+      await app.vault.create(fullPath, JSON.stringify(canvasData, null, 2));
+      new Notice(`✅ Exported trace view to ${fullPath}`);
+    } catch (e) {
+      console.error("Canvas export failed:", e);
+      new Notice(`❌ Export failed: ${e.message}`);
+    }
+  }
+
 
 
   // ========== UI COMPONENTS ==========
