@@ -439,6 +439,7 @@ try {
         id: id,
         type: "file",
         file: page.file.path,
+        subpath: "#Requirement Text",
         x: x,
         y: y,
         width: CARD_WIDTH,
