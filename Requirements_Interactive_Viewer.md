@@ -400,23 +400,7 @@ try {
     return regex.test(String(value || ""));
   }
 
-  // YAML frontmatter update
-  function updateYamlFrontmatter(content, key, value) {
-    const yamlRegex = /^---([\s\S]*?)---/;
-    const match = content.match(yamlRegex);
-    if (match) {
-      const yaml = match[1];
-      const keyRegex = new RegExp(`^${key}:.*$`, 'm');
-      let newYaml;
-      if (keyRegex.test(yaml)) {
-        newYaml = yaml.replace(keyRegex, `${key}: ${JSON.stringify(value)}`);
-      } else {
-        newYaml = yaml.trim() + `\n${key}: ${JSON.stringify(value)}`;
-      }
-      return content.replace(yamlRegex, `---\n${newYaml}\n---`);
-    }
-    return `---\n${key}: ${JSON.stringify(value)}\n---\n${content}`;
-  }
+
 
   // ========== UI COMPONENTS ==========
   
@@ -730,34 +714,7 @@ try {
     });
     
     // Requirement text
-    let reqText = page.Requirement_Text;
-    
-    // Fallback: If no YAML text, try to read from file content
-    if (!reqText) {
-      let content = getCachedContent(page.file.path);
-      if (!content) {
-        // This is async, but we can't await inside the render loop easily without slowing things down.
-        // For now, we'll trigger a load and re-render if needed, or just show a placeholder.
-        // Better approach: Load content on demand if missing.
-        try {
-           const rawContent = await dv.io.load(page.file.path);
-           setCachedContent(page.file.path, rawContent);
-           content = rawContent;
-        } catch (e) {
-           console.error("Failed to load content for", page.file.path, e);
-        }
-      }
-      
-      if (content) {
-        // Extract text between "## Requirement Text" and the next header or end of file
-        const match = content.match(/## Requirement Text\s*\n([\s\S]*?)(?=\n## |$)/);
-        if (match) {
-          reqText = match[1].trim();
-        }
-      }
-    }
-
-    if (reqText) {
+    if (page.Requirement_Text) {
       if (CONFIG.SHOW_REQ_TEXT_HEADER) {
         const textHeader = card.createEl("div");
         Object.assign(textHeader.style, STYLES.descriptionHeader);
@@ -766,7 +723,7 @@ try {
       
       const textDiv = card.createEl("div");
       Object.assign(textDiv.style, STYLES.description);
-      textDiv.textContent = reqText;
+      textDiv.textContent = page.Requirement_Text;
     }
     
     // Traceability
@@ -832,52 +789,6 @@ try {
         });
       }
     }
-    
-    // Notes (editable)
-    const notesLabel = card.createEl("div");
-    notesLabel.textContent = "📝 Notes";
-    notesLabel.style.fontWeight = "600";
-    notesLabel.style.marginTop = "10px";
-    
-    const notesEl = card.createEl("div");
-    notesEl.textContent = page.notes || "Double-click to add notes...";
-    makeEditable(notesEl, async (newContent) => {
-      try {
-        const file = app.vault.getAbstractFileByPath(page.file.path);
-        if (file) {
-          const content = await app.vault.read(file);
-          const updated = updateYamlFrontmatter(content, 'notes', newContent);
-          await app.vault.modify(file, updated);
-        }
-      } catch (e) {
-        console.error("Error saving notes:", e);
-      }
-    });
-    
-    // Tags
-    const tagsDiv = card.createEl("div");
-    tagsDiv.style.marginTop = "10px";
-    new TagManager(tagsDiv, page.tags || [], async (newTags) => {
-      try {
-        const file = app.vault.getAbstractFileByPath(page.file.path);
-        if (file) {
-          const content = await app.vault.read(file);
-          const updated = updateYamlFrontmatter(content, 'tags', newTags);
-          await app.vault.modify(file, updated);
-        }
-      } catch (e) {
-        console.error("Error saving tags:", e);
-      }
-    });
-  }
-
-  async function renderResults() {
-    currentResults = await filterResults();
-    resultsDiv.innerHTML = "";
-    displayedCount = 0;
-    
-    // Update stats
-    statsDiv.innerHTML = `
       <div><strong>Total:</strong> ${currentResults.length} requirements</div>
       <div><strong>Displayed:</strong> <span id="displayed-count">0</span></div>
     `;
@@ -909,44 +820,54 @@ try {
     const tag = await customPrompt("Enter tag to add to all filtered requirements:");
     if (!tag || !currentResults.length) return;
     
+    let updatedCount = 0;
     for (const page of currentResults) {
       try {
         const file = app.vault.getAbstractFileByPath(page.file.path);
         if (file) {
-          const content = await app.vault.read(file);
-          const existingTags = page.tags || [];
-          if (!existingTags.includes(tag)) {
-            existingTags.push(tag);
-            const updated = updateYamlFrontmatter(content, 'tags', existingTags);
-            await app.vault.modify(file, updated);
-          }
+          await app.fileManager.processFrontMatter(file, (frontmatter) => {
+            if (!frontmatter["tags"]) {
+              frontmatter["tags"] = [];
+            }
+            // Handle case where tags might be a string (single tag)
+            if (typeof frontmatter["tags"] === "string") {
+              frontmatter["tags"] = [frontmatter["tags"]];
+            }
+            if (Array.isArray(frontmatter["tags"]) && !frontmatter["tags"].includes(tag)) {
+              frontmatter["tags"].push(tag);
+              updatedCount++;
+            }
+          });
         }
       } catch (e) {
         console.error("Error adding tag:", e);
       }
     }
-    alert(`Tag "${tag}" added to ${currentResults.length} requirements!`);
-    renderResults();
+    new Notice(`Tag "${tag}" added to ${updatedCount} requirements!`);
+    // Wait a bit for Obsidian to index changes before re-rendering
+    setTimeout(() => renderResults(), 1000);
   };
 
   bulkNoteBtn.onclick = async () => {
     const note = await customPrompt("Enter note to add to all filtered requirements:");
     if (note === null || !currentResults.length) return;
     
+    let updatedCount = 0;
     for (const page of currentResults) {
       try {
         const file = app.vault.getAbstractFileByPath(page.file.path);
         if (file) {
-          const content = await app.vault.read(file);
-          const updated = updateYamlFrontmatter(content, 'notes', note);
-          await app.vault.modify(file, updated);
+          await app.fileManager.processFrontMatter(file, (frontmatter) => {
+            frontmatter["notes"] = note;
+            updatedCount++;
+          });
         }
       } catch (e) {
         console.error("Error adding note:", e);
       }
     }
-    alert(`Note added to ${currentResults.length} requirements!`);
-    renderResults();
+    new Notice(`Note added to ${updatedCount} requirements!`);
+    setTimeout(() => renderResults(), 1000);
   };
 
   exportCsvBtn.onclick = () => {
