@@ -42,15 +42,15 @@ def suggest_mapping(left_cols, right_cols):
             suggestions[l] = ""
     return suggestions
 
-def create_mapping_template(left_csv, right_csv, output_path):
+def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1, right_header_row=1):
     """
     Reads headers from CSVs and creates a mapping template Excel file.
     """
     print(f"Reading headers from {left_csv} and {right_csv}...")
     try:
         # Read only headers
-        l_df = read_data_eager_headers(left_csv)
-        r_df = read_data_eager_headers(right_csv)
+        l_df = read_data_eager_headers(left_csv, header_row=left_header_row)
+        r_df = read_data_eager_headers(right_csv, header_row=right_header_row)
         left_cols = l_df.columns
         right_cols = r_df.columns
     except Exception as e:
@@ -67,7 +67,8 @@ def create_mapping_template(left_csv, right_csv, output_path):
             "left_column": l,
             "suggested_right_column": suggestions.get(l, ""),
             "confirmed_right_column": suggestions.get(l, ""), # Default to suggestion
-            "is_key": ""
+            "is_key": "",
+            "fill_down": ""
         })
     
     df_mapping = pd.DataFrame(mapping_data)
@@ -76,9 +77,10 @@ def create_mapping_template(left_csv, right_csv, output_path):
     instructions_data = [
         ["Step 1", "Review the 'Columns' sheet."],
         ["Step 2", "Verify 'confirmed_right_column' matches the correct column in the Right file. Clear it if you don't want to compare that column."],
-        ["Step 3", "Mark Key columns by entering 'Y' (case insensitive) in the 'is_key' column. Keys are used to join rows."],
-        ["Step 4", "Save this workbook."],
-        ["Step 5", "Run the diff script again with --mapping-confirmed."]
+        ["Step 3", "Mark Key columns by entering 'Y' in 'is_key'. Keys are used to join rows."],
+        ["Step 4", "Mark columns that need Forward Fill (e.g. parent IDs) by entering 'Y' in 'fill_down'. This fills empty cells with the value from the row above."],
+        ["Step 5", "Save this workbook."],
+        ["Step 6", "Run the diff script again with --mapping-confirmed."]
     ]
     df_instructions = pd.DataFrame(instructions_data, columns=["Step", "Action"])
 
@@ -91,9 +93,10 @@ def create_mapping_template(left_csv, right_csv, output_path):
         workbook = writer.book
         worksheet = writer.sheets['Columns']
         
-        # Add a dropdown for is_key
-        validation_key = {'validate': 'list', 'source': ['Y', 'N']}
-        worksheet.data_validation(f'D2:D{len(df_mapping)+1}', validation_key) 
+        # Add a dropdown for is_key and fill_down
+        validation_yn = {'validate': 'list', 'source': ['Y', 'N']}
+        worksheet.data_validation(f'D2:D{len(df_mapping)+1}', validation_yn) 
+        worksheet.data_validation(f'E2:E{len(df_mapping)+1}', validation_yn) 
         
         # Add a dropdown for confirmed_right_column
         # We need to list all available right columns
@@ -117,6 +120,7 @@ def create_mapping_template(left_csv, right_csv, output_path):
         worksheet.set_column('B:B', 30)
         worksheet.set_column('C:C', 30)
         worksheet.set_column('D:D', 10)
+        worksheet.set_column('E:E', 15)
 
     print(f"Done. Please edit the mapping file and re-run.")
 
@@ -126,6 +130,7 @@ def read_mapping(mapping_path):
     Returns:
         mapping_dict: {left_col: right_col} (only for confirmed mappings)
         keys: list of left_col names that are keys
+        fill_down_cols: list of left_col names to forward fill
     """
     print(f"Reading mapping from {mapping_path}...")
     try:
@@ -143,73 +148,131 @@ def read_mapping(mapping_path):
 
     mapping_dict = {}
     keys = []
+    fill_down_cols = []
 
     for _, row in df.iterrows():
         l_col = row['left_column']
         r_col = row['confirmed_right_column']
         is_key = str(row['is_key']).strip().upper() == 'Y'
+        
+        # Check fill_down. Handle missing col if old template used.
+        fill_down = False
+        if 'fill_down' in df.columns:
+            fill_down = str(row['fill_down']).strip().upper() == 'Y'
 
         if pd.notna(r_col) and str(r_col).strip() != "":
             mapping_dict[l_col] = r_col
             if is_key:
                 keys.append(l_col)
+            if fill_down:
+                fill_down_cols.append(l_col)
+                
         elif is_key:
             print(f"Warning: Column '{l_col}' is marked as key but has no mapped right column. Ignoring.")
+    
+    return mapping_dict, keys, fill_down_cols
 
-    return mapping_dict, keys
-
-def read_data_lazy(path):
+def read_data_lazy(path, header_row=1):
     """
-    Reads data lazily from CSV or Excel.
+    Reads data lazily from CSV or Excel, respecting the header_row (1-based).
     """
     path_str = str(path).lower()
+    # 0-based index for polars/pandas
+    header_idx = header_row - 1
+    
     if path_str.endswith('.csv'):
-        return pl.scan_csv(path)
+        # Polars scan_csv uses skip_rows to skip lines BEFORE the header
+        # If header is on row 1, skip_rows=0. If row 2, skip_rows=1.
+        return pl.scan_csv(path, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
         # Polars read_excel is eager, so we convert to lazy
-        # Try to use fastexcel, fall back to openpyxl
         try:
             import fastexcel
-            return pl.read_excel(path).lazy()
+            # fastexcel/polars support header_row argument (0-based)
+            return pl.read_excel(path, header_row=header_idx).lazy()
         except ImportError:
-            # Fallback
-            return pl.read_excel(path, engine='openpyxl').lazy()
+            # Fallback (openpyxl also supports header_row often, or we use pandas logic if needed, 
+            # but pl.read_excel wraps it. Let's send header_row param.)
+            return pl.read_excel(path, engine='openpyxl', header_row=header_idx).lazy()
     else:
         raise ValueError(f"Unsupported file format: {path}")
 
-def read_data_eager_headers(path):
+def read_data_eager_headers(path, header_row=1):
     """
     Reads headers eagerly for mapping generation.
     """
     path_str = str(path).lower()
+    header_idx = header_row - 1
+
     if path_str.endswith('.csv'):
-        return pl.read_csv(path, n_rows=0)
+        # read_csv also supports skip_rows
+        return pl.read_csv(path, n_rows=0, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
         try:
              import fastexcel
-             return pl.read_excel(path).head(0)
+             return pl.read_excel(path, header_row=header_idx).head(0)
         except ImportError:
-             return pl.read_excel(path, engine='openpyxl').head(0)
+             return pl.read_excel(path, engine='openpyxl', header_row=header_idx).head(0)
         except TypeError:
-             # Fallback if head/n_rows not supported in read_excel args directly
+             # Fallback if header_row not supported in older versions? 
+             # It should be supported in recent polars.
              try:
                 import fastexcel
-                return pl.read_excel(path).head(0)
+                return pl.read_excel(path, header_row=header_idx).head(0)
              except ImportError:
-                return pl.read_excel(path, engine='openpyxl').head(0)
+                return pl.read_excel(path, engine='openpyxl', header_row=header_idx).head(0)
     else:
         raise ValueError(f"Unsupported file format: {path}")
 
 
-def compute_diff(left_path, right_path, mapping, keys):
+
+def compute_diff(left_path, right_path, mapping, keys, fill_down_cols=None, left_header_row=1, right_header_row=1):
     """
     Computes the diff using Polars.
     """
     print("Loading data into Polars...")
+    print(f"  Left: {left_path} (Header Row: {left_header_row})")
+    print(f"  Right: {right_path} (Header Row: {right_header_row})")
     
     # Scan Data (lazy)
-    lf_left = read_data_lazy(left_path)
-    lf_right = read_data_lazy(right_path)
+    lf_left = read_data_lazy(left_path, header_row=left_header_row)
+    lf_right = read_data_lazy(right_path, header_row=right_header_row)
+
+    # 0. Apply Forward Fill if requested
+    # We do this BEFORE any renaming or joining.
+    # For Left:
+    if fill_down_cols:
+        print(f"Applying Forward Fill to: {fill_down_cols}")
+        # Only apply to cols present in Left
+        # Note: Polars forward_fill works on Nulls. 
+        # If the file has empty strings, we must replace "" with Null first.
+        
+        # Helper to setup fill exprs
+        def diff_fill(lf, cols_to_fill):
+            # 1. Replace empty strings with null
+            # 2. Forward fill
+            # We assume cols_to_fill exist.
+            exprs = []
+            for c in cols_to_fill:
+                 exprs.append(
+                     pl.when(pl.col(c).cast(pl.String).str.strip_chars() == "")
+                     .then(None)
+                     .otherwise(pl.col(c))
+                     .forward_fill()
+                     .alias(c)
+                 )
+            return lf.with_columns(exprs)
+
+        # Apply to Left
+        # We need to intersect with available columns in lazyframe?
+        # Actually mapping keys are Left columns. So fill_down_cols are Left columns.
+        lf_left = diff_fill(lf_left, [c for c in fill_down_cols if c in mapping]) # simplistic check
+
+        # Apply to Right
+        # Right columns have different names (Values of mapping).
+        # We need to map `fill_down_cols` (which are Left names) to Right names.
+        right_fill_cols = [mapping[c] for c in fill_down_cols if c in mapping]
+        lf_right = diff_fill(lf_right, right_fill_cols)
 
     # Select and rename columns in Right to match Left (for keys and mapped cols)
     # Strategy: 
@@ -293,8 +356,49 @@ def compute_diff(left_path, right_path, mapping, keys):
     # We need to check presence of non-key columns? Or add a literal before joining?
     # Adding a literal is safer.
     
-    lf_left_marked = read_data_lazy(left_path).with_columns(pl.lit(True).alias("_in_left"))
-    lf_right_marked = read_data_lazy(right_path).rename(right_rename_map).with_columns(pl.lit(True).alias("_in_right"))
+    # Adding a literal is safer.
+    
+    # Re-read for marking presence?
+    # Wait, if we use the *filled* dataframes for logic (joining), we should probably use them for diffing too?
+    # Actually `df` (collected join) has all the data.
+    # But `_in_left` / `_in_right` logic relies on the original files presence.
+    # If we fill down, we change the data.
+    # Does "Left Only" mean "Left Row with Fill applied" or "Raw Left Row"?
+    # The user probably wants the Filled version to treat it as a valid record.
+    # So we should use the `lf_left` and `lf_right` (which ARE marked with fill logic above) for the join.
+    # Previously I scanned again. That was inefficient and potentially inconsistent if I added logic.
+    # Let's reusing the `lf_left` and `lf_right` variables we prepared!
+    
+    # We already have `joined` which holds the FULL merge.
+    # We just need to determine presence.
+    # In a full join:
+    # If `lf_left` had a row, its columns are present.
+    # If `lf_right` had a row, its columns (suffixed) are present.
+    # But we need a explicit flag because columns might be null in the data itself.
+    
+    # Let's add the flags *before* the join in Step 0.
+    # But I can't restart Step 0 easily here without rewriting everything.
+    # Alternative: check if key columns are null.
+    # If Join Key is present, the row exists.
+    # But keys can be null in data? (Not if we fill down properly).
+    
+    # Let's stick to the separation for now but apply fill logic to the marking frames too?
+    # Or better: Use the `joined` dataframe and verify presence by checking non-null keys?
+    # If we assume keys are populated (especially with fill-down), checking keys is safe.
+    # BUT, let's keep the explicit flags to remain robust against null keys.
+    
+    # So, I need to apply Fill Down to the marked frames too.
+    # This suggests I should refactor `read_and_process` or just copy logic.
+    # To keep it simple:
+    lf_left_marked = read_data_lazy(left_path, header_row=left_header_row)
+    if fill_down_cols:
+         lf_left_marked = diff_fill(lf_left_marked, [c for c in fill_down_cols if c in mapping])
+    lf_left_marked = lf_left_marked.with_columns(pl.lit(True).alias("_in_left"))
+    
+    lf_right_marked = read_data_lazy(right_path, header_row=right_header_row)
+    if fill_down_cols:
+         lf_right_marked = diff_fill(lf_right_marked, right_fill_cols)
+    lf_right_marked = lf_right_marked.rename(right_rename_map).with_columns(pl.lit(True).alias("_in_right"))
     
     if keys == ["_row_hash"]:
          # Re-apply hash if we are in fallback mode
@@ -993,13 +1097,23 @@ def main():
     parser.add_argument("--hierarchy", help="Comma-separated list of columns for hierarchy (e.g. 'Channel,Label')")
     parser.add_argument("--max-rows-excel", type=int, default=200000, help="Max rows to export to Excel")
     
+    # Header Row Arguments
+    parser.add_argument("--header-row", type=int, default=1, help="Header row for both files (default: 1)")
+    parser.add_argument("--left-header-row", type=int, help="Header row for left file (overrides --header-row)")
+    parser.add_argument("--right-header-row", type=int, help="Header row for right file (overrides --header-row)")
+    
     args = parser.parse_args()
+    
+    # Resolve header rows
+    # If specific is not set, use global.
+    left_header = args.left_header_row if args.left_header_row is not None else args.header_row
+    right_header = args.right_header_row if args.right_header_row is not None else args.header_row
     
     # 1. Check if mapping is needed
     if not args.mapping:
         mapping_path = "mapping_template.xlsx"
         if not os.path.exists(mapping_path):
-            create_mapping_template(args.left, args.right, mapping_path)
+            create_mapping_template(args.left, args.right, mapping_path, left_header_row=left_header, right_header_row=right_header)
             sys.exit(0)
         else:
             print(f"Using existing default mapping: {mapping_path}")
@@ -1012,10 +1126,10 @@ def main():
     # For now, we trust the user.
     
     # 3. Read Mapping
-    mapping_dict, keys = read_mapping(args.mapping)
+    mapping_dict, keys, fill_down_cols = read_mapping(args.mapping)
     
     # 4. Compute Diff
-    df_diff = compute_diff(args.left, args.right, mapping_dict, keys)
+    df_diff = compute_diff(args.left, args.right, mapping_dict, keys, fill_down_cols=fill_down_cols, left_header_row=left_header, right_header_row=right_header)
     
     # 5. Write Output
     write_excel_report(df_diff, args.out, mapping_dict, keys, max_rows=args.max_rows_excel)

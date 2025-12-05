@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.xlsx
+!mapping_template.xlsx
+*.html
+.pytest_cache/
+.coverage
+env/
+venv/
+.idea/
+.vscode/

@@ -1,0 +1,7 @@
+Category,Subcategory,ID,Value
+Electronics,,1,100
+Electronics,Phones,2,205
+Electronics,Laptops,3,300
+Home,Furniture,5,500
+Home,Decor,6,600
+UNKNOWN,Unknown,99,999
