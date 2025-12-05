@@ -60,6 +60,37 @@ def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1,
     print("Generating suggestions...")
     suggestions = suggest_mapping(left_cols, right_cols)
 
+    # Smart Fill Detection
+    # Read a sample of Left file to detect fill_down candidates
+    # Heuristic: Value in row 1, but has gaps (null/empty) in subsequent rows
+    print("Analyzing left file for Fill Down candidates...")
+    fill_down_suggestions = {}
+    try:
+        # Read up to 100 rows
+        lf_sample = read_data_lazy(left_csv, header_row=left_header_row).head(100)
+        df_sample = lf_sample.collect()
+        
+        for col in left_cols:
+            if col in df_sample.columns:
+                s = df_sample[col]
+                # Check if first value is not null/empty
+                first_val = s[0]
+                is_first_valid = first_val is not None and str(first_val).strip() != ""
+                
+                if is_first_valid:
+                    # Check for gaps (nulls or empty strings)
+                    # We cast to string to handle empty strings safely
+                    has_gaps = s.cast(pl.String).str.strip_chars().eq("").any() or s.is_null().any()
+                    
+                    if has_gaps:
+                        fill_down_suggestions[col] = "Y"
+                    else:
+                        fill_down_suggestions[col] = ""
+                else:
+                    fill_down_suggestions[col] = ""
+    except Exception as e:
+        print(f"Warning: Could not analyze for Fill Down suggestions: {e}")
+
     # Create DataFrame for the mapping sheet
     mapping_data = []
     for l in left_cols:
@@ -68,7 +99,7 @@ def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1,
             "suggested_right_column": suggestions.get(l, ""),
             "confirmed_right_column": suggestions.get(l, ""), # Default to suggestion
             "is_key": "",
-            "fill_down": ""
+            "fill_down": fill_down_suggestions.get(l, "")
         })
     
     df_mapping = pd.DataFrame(mapping_data)
@@ -185,15 +216,15 @@ def read_data_lazy(path, header_row=1):
         # If header is on row 1, skip_rows=0. If row 2, skip_rows=1.
         return pl.scan_csv(path, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
-        # Polars read_excel is eager, so we convert to lazy
+        # Polars read_excel support for header_row is flaky across versions/engines.
+        # Use Pandas for robustness.
         try:
-            import fastexcel
-            # fastexcel/polars support header_row argument (0-based)
-            return pl.read_excel(path, header_row=header_idx).lazy()
-        except ImportError:
-            # Fallback (openpyxl also supports header_row often, or we use pandas logic if needed, 
-            # but pl.read_excel wraps it. Let's send header_row param.)
-            return pl.read_excel(path, engine='openpyxl', header_row=header_idx).lazy()
+            # Pandas uses 0-based header index
+            pdf = pd.read_excel(path, header=header_idx)
+            return pl.from_pandas(pdf).lazy()
+        except Exception as e:
+            # Fallback or error
+            raise ValueError(f"Error reading Excel file {path}: {e}")
     else:
         raise ValueError(f"Unsupported file format: {path}")
 
@@ -209,18 +240,11 @@ def read_data_eager_headers(path, header_row=1):
         return pl.read_csv(path, n_rows=0, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
         try:
-             import fastexcel
-             return pl.read_excel(path, header_row=header_idx).head(0)
-        except ImportError:
-             return pl.read_excel(path, engine='openpyxl', header_row=header_idx).head(0)
-        except TypeError:
-             # Fallback if header_row not supported in older versions? 
-             # It should be supported in recent polars.
-             try:
-                import fastexcel
-                return pl.read_excel(path, header_row=header_idx).head(0)
-             except ImportError:
-                return pl.read_excel(path, engine='openpyxl', header_row=header_idx).head(0)
+             # Pandas for robustness
+             pdf = pd.read_excel(path, header=header_idx, nrows=0) # Read 0 rows for header
+             return pl.from_pandas(pdf)
+        except Exception as e:
+             raise ValueError(f"Error reading Excel headers {path}: {e}")
     else:
         raise ValueError(f"Unsupported file format: {path}")
 
