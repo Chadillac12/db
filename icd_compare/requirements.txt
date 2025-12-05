@@ -1,0 +1,8 @@
+polars>=0.17.0
+pandas>=1.5
+pyarrow
+xlsxwriter
+rapidfuzz
+openpyxl
+pytest
+fastexcel
