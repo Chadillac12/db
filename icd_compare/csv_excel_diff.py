@@ -32,6 +32,8 @@ def _cleanup_temp_files():
             os.remove(p)
         except Exception:
             pass
+        else:
+            log(f"Temp file cleaned: {p}", 3)
 
 
 atexit.register(_cleanup_temp_files)
@@ -70,6 +72,7 @@ def stream_excel_to_temp_csv(path, header_row=1, sheet_name=None, max_rows=None)
     Stream an Excel sheet to a temporary CSV using openpyxl read_only mode to avoid
     materializing the whole workbook in memory. Returns the temp CSV path.
     """
+    log(f"Streaming Excel -> temp CSV: {path} (sheet={sheet_name}, header_row={header_row}, max_rows={max_rows})", 2)
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         ws = _get_worksheet(wb, sheet_name)
@@ -84,13 +87,18 @@ def stream_excel_to_temp_csv(path, header_row=1, sheet_name=None, max_rows=None)
         if header is None:
             raise ValueError(f"Header row {header_row} not found in {path}")
 
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv", newline="", encoding="utf-8")
+        tmp = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".csv", newline="", encoding="utf-8")
         _register_temp_file(tmp.name)
         writer = csv.writer(tmp, lineterminator="\n")
 
-        normalized_header = [
-            str(h) if h is not None else f"col_{idx+1}" for idx, h in enumerate(header)
-        ]
+        normalized_header = []
+        for idx, h in enumerate(header):
+            if h is None:
+                synthesized = f"col_{idx+1}"
+                log(f"Synthesizing header name {synthesized} at index {idx} in {path}", 1)
+                normalized_header.append(synthesized)
+            else:
+                normalized_header.append(str(h))
         writer.writerow(normalized_header)
 
         written = 0
@@ -104,6 +112,7 @@ def stream_excel_to_temp_csv(path, header_row=1, sheet_name=None, max_rows=None)
             written += 1
 
         tmp.close()
+        log(f"Created temp CSV: {tmp.name} (rows={written}, cols={len(normalized_header)})", 2)
         return tmp.name
     finally:
         try:
@@ -117,6 +126,7 @@ def read_excel_sample(path, header_row=1, sheet_name=None, n_rows=100):
     Lightweight sampler for Excel: read header + up to n_rows of data via openpyxl streaming.
     Returns a Polars DataFrame.
     """
+    log(f"Sampling Excel: {path} (sheet={sheet_name}, header_row={header_row}, n_rows={n_rows})", 2)
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         ws = _get_worksheet(wb, sheet_name)
@@ -128,9 +138,14 @@ def read_excel_sample(path, header_row=1, sheet_name=None, n_rows=100):
         if header is None:
             raise ValueError(f"Header row {header_row} not found in {path}")
 
-        normalized_header = [
-            str(h) if h is not None else f"col_{idx+1}" for idx, h in enumerate(header)
-        ]
+        normalized_header = []
+        for idx, h in enumerate(header):
+            if h is None:
+                synthesized = f"col_{idx+1}"
+                log(f"Synthesizing header name {synthesized} at index {idx} in {path}", 1)
+                normalized_header.append(synthesized)
+            else:
+                normalized_header.append(str(h))
 
         data = []
         for i, row in enumerate(rows_iter):
@@ -180,6 +195,7 @@ def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1,
         r_df = read_data_eager_headers(right_csv, header_row=right_header_row, sheet_name=right_sheet)
         left_cols = l_df.columns
         right_cols = r_df.columns
+        log(f"Header read complete. Left cols: {len(left_cols)}, Right cols: {len(right_cols)}", 1)
     except Exception as e:
         log(f"Error reading CSV headers: {e}", 1)
         sys.exit(1)
@@ -197,7 +213,8 @@ def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1,
         if str(left_csv).lower().endswith(('.xlsx', '.xls')):
             df_sample = read_excel_sample(left_csv, header_row=left_header_row, sheet_name=left_sheet, n_rows=100)
         else:
-            df_sample = read_data_lazy(left_csv, header_row=left_header_row, sheet_name=left_sheet).head(100).collect()
+            # fetch limits compute to N rows without eager-reading all columns; safer for wide CSVs
+            df_sample = read_data_lazy(left_csv, header_row=left_header_row, sheet_name=left_sheet).fetch(100)
         
         log(f"Sample data columns: {df_sample.columns}", 3)
         
@@ -485,6 +502,7 @@ def read_data_lazy(path, header_row=1, sheet_name=None):
         try:
             temp_csv = stream_excel_to_temp_csv(path, header_row=header_row, sheet_name=sheet_name)
             # Header already included; no skip_rows needed.
+            log(f"Streaming Excel via temp CSV {temp_csv}", 1)
             return pl.scan_csv(temp_csv)
         except Exception as e:
             raise ValueError(f"Error streaming Excel file {path}: {e}")
@@ -507,6 +525,7 @@ def read_data_eager_headers(path, header_row=1, sheet_name=None):
         try:
              log(f"Reading Excel Headers '{path}' with header={header_idx}, sheet_name={sheet_name}", 3)
              temp_csv = stream_excel_to_temp_csv(path, header_row=header_row, sheet_name=sheet_name, max_rows=0)
+             log(f"Streaming Excel headers via temp CSV {temp_csv}", 2)
              return pl.read_csv(temp_csv, n_rows=0)
         except Exception as e:
              raise ValueError(f"Error reading Excel headers {path}: {e}")
@@ -601,6 +620,13 @@ def compute_diff(left_path, right_path, mapping, keys, fill_down_cols=None, left
     
     # Construct the rename mapping for right
     right_rename_map = {v: k for k, v in mapping.items()} # right_name -> left_name
+
+    # Validate that mapped right columns exist before proceeding
+    right_cols_available = set(read_data_lazy(right_path, header_row=right_header_row, sheet_name=right_sheet).columns)
+    missing_right = set(mapping.values()) - right_cols_available
+    if missing_right:
+        log(f"Error: Mapped right columns missing from right file: {missing_right}", 1)
+        sys.exit(1)
     
     # Apply renaming to right lazyframe
     # We use select to reorder/rename, but we want to keep unmapped ones too?
@@ -650,6 +676,7 @@ def compute_diff(left_path, right_path, mapping, keys, fill_down_cols=None, left
 
     joined = lf_left_marked.join(lf_right_marked, on=keys, how="full", suffix="_right")
     df = joined.collect()
+    log(f"Join complete. Rows collected: {len(df)}", 1)
     
     # Fill nulls in presence flags
     df = df.with_columns([
@@ -886,6 +913,10 @@ def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
     log(f"Writing HTML report to {output_path}...", 1)
     
     # Convert to pandas for easier HTML generation (assuming it fits in memory)
+    row_cap = 300000  # guardrail to avoid OOM
+    if len(df) > row_cap:
+        log(f"Skipping HTML output: {len(df)} rows exceed guardrail of {row_cap}", 1)
+        return
     pdf = df.to_pandas()
     
     # Pre-process for hierarchy
@@ -1135,12 +1166,14 @@ def main():
     parser.add_argument("--left-sheet", type=str, help="Sheet name for left file.")
     parser.add_argument("--right-sheet", type=str, help="Sheet name for right file.")
 
-    parser.add_argument("--debug", type=int, default=0, help="Debug level (1=Info, 2=Flow, 3=Data)")
+    parser.add_argument("--debug", type=int, default=None, help="Debug level (1=Info, 2=Flow, 3=Data)")
 
     args = parser.parse_args()
     
     global DEBUG_LEVEL
-    DEBUG_LEVEL = args.debug
+    if args.debug is not None:
+        DEBUG_LEVEL = args.debug
+    log(f"Debug level set to {DEBUG_LEVEL}", 1)
 
     # Resolve header rows
     left_header = args.left_header_row if args.left_header_row is not None else args.header_row
@@ -1185,7 +1218,8 @@ def main():
     t0 = time.time()
     mapping_dict, keys, fill_down_cols = read_mapping(args.mapping)
     t1 = time.time()
-    log(f"Mapping read time: {t1-t0:.4f}s", 1)
+    log(f"Mapping loaded. Left cols mapped: {len(mapping_dict)} | Keys: {keys} | Fill down: {fill_down_cols}", 1)
+    log(f"Mapping read time: {t1-t0:.4f}s", 2)
     
     # 4. Compute Diff
     t2 = time.time()
@@ -1193,7 +1227,7 @@ def main():
                            left_header_row=left_header, right_header_row=right_header, 
                            left_sheet=left_sheet, right_sheet=right_sheet)
     t3 = time.time()
-    log(f"Diff computation time: {t3-t2:.4f}s", 1)
+    log(f"Diff computation time: {t3-t2:.4f}s | Rows: {len(df_diff)}", 1)
     
     # 5. Write Output
     write_excel_report(df_diff, args.out, mapping_dict, keys, max_rows=args.max_rows_excel)
