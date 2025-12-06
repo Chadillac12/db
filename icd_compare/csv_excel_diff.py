@@ -1319,7 +1319,20 @@ def main():
 
     # 6. HTML Output
     if args.html:
-        hierarchy_cols = [c.strip() for c in args.hierarchy.split(",")] if args.hierarchy else []
+        if args.hierarchy:
+            hierarchy_cols = [c.strip() for c in args.hierarchy.split(",") if c.strip()]
+        else:
+            # Default HTML navigation to any columns marked as fill-down in the mapping
+            hierarchy_cols = []
+            seen = set()
+            for col in fill_down_cols:
+                if col and col not in seen:
+                    hierarchy_cols.append(col)
+                    seen.add(col)
+            if hierarchy_cols:
+                log(f"No --hierarchy passed; using fill-down columns for HTML navigation: {hierarchy_cols}", 1)
+            else:
+                log("No --hierarchy passed and no fill-down columns defined; HTML navigation will be flat.", 1)
         write_html_report(df_diff, args.html, mapping_dict, keys, hierarchy_cols)
 
 if __name__ == "__main__":
