@@ -163,6 +163,46 @@ def read_excel_sample(path, header_row=1, sheet_name=None, n_rows=100):
         except Exception:
             pass
 
+
+def infer_float_columns_from_sample(csv_path, skip_rows=0, sample_rows=200):
+    """
+    Sample a CSV (header already aligned) as strings and flag columns that contain
+    decimal/exponent values so we can upcast them to Float64 to avoid int parsing errors.
+    """
+    try:
+        df = pl.read_csv(
+            csv_path,
+            skip_rows=skip_rows,
+            n_rows=sample_rows,
+            dtypes=pl.Utf8,
+            infer_schema_length=sample_rows,
+        )
+    except Exception as e:
+        log(f"Warning: Could not sample for dtype inference ({csv_path}): {e}", 1)
+        return {}
+
+    float_cols = set()
+    for col in df.columns:
+        series = df[col]
+        # Check string tokens for decimal/exponent indicators
+        for val in series.to_list():
+            if val is None:
+                continue
+            s = str(val).strip()
+            if not s:
+                continue
+            # If it looks numeric and has '.' or exponent, mark as float
+            if any(ch in s for ch in [".", "e", "E"]):
+                try:
+                    float(s)
+                    float_cols.add(col)
+                    break
+                except ValueError:
+                    continue
+    if float_cols:
+        log(f"Auto-upcasting columns to Float64 based on sample: {sorted(float_cols)}", 2)
+    return {c: pl.Float64 for c in float_cols}
+
 def suggest_mapping(left_cols, right_cols):
     """
     Suggest mapping from left columns to right columns using fuzzy matching.
@@ -496,14 +536,16 @@ def read_data_lazy(path, header_row=1, sheet_name=None):
     if path_str.endswith('.csv'):
         # Polars scan_csv uses skip_rows to skip lines BEFORE the header
         # If header is on row 1, skip_rows=0. If row 2, skip_rows=1.
-        return pl.scan_csv(path, skip_rows=header_idx)
+        dtypes_overrides = infer_float_columns_from_sample(path, skip_rows=header_idx)
+        return pl.scan_csv(path, skip_rows=header_idx, dtypes=dtypes_overrides if dtypes_overrides else None)
     elif path_str.endswith(('.xlsx', '.xls')):
         # Stream Excel -> temp CSV to avoid loading the entire workbook into memory
         try:
             temp_csv = stream_excel_to_temp_csv(path, header_row=header_row, sheet_name=sheet_name)
             # Header already included; no skip_rows needed.
             log(f"Streaming Excel via temp CSV {temp_csv}", 1)
-            return pl.scan_csv(temp_csv)
+            dtypes_overrides = infer_float_columns_from_sample(temp_csv, skip_rows=0)
+            return pl.scan_csv(temp_csv, dtypes=dtypes_overrides if dtypes_overrides else None)
         except Exception as e:
             raise ValueError(f"Error streaming Excel file {path}: {e}")
     else:
