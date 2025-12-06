@@ -1,6 +1,9 @@
 import argparse
 import sys
 import os
+import csv
+import tempfile
+import atexit
 import pandas as pd
 import polars as pl
 import xlsxwriter
@@ -11,6 +14,111 @@ import json
 
 # Increase max string length for Polars just in case
 pl.Config.set_fmt_str_lengths(1000)
+
+# Track temporary files created when we stream Excel -> CSV so we can clean up on exit.
+_TEMP_FILES = []
+
+
+def _register_temp_file(path):
+    _TEMP_FILES.append(path)
+
+
+def _cleanup_temp_files():
+    for p in _TEMP_FILES:
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_temp_files)
+
+
+def stream_excel_to_temp_csv(path, header_row=1, max_rows=None):
+    """
+    Stream an Excel sheet to a temporary CSV using openpyxl read_only mode to avoid
+    materializing the whole workbook in memory. Returns the temp CSV path.
+    """
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        header_idx = header_row - 1  # convert to 0-based
+        rows_iter = ws.iter_rows(values_only=True)
+
+        # Skip rows before the header row
+        for _ in range(header_idx):
+            next(rows_iter, None)
+
+        header = next(rows_iter, None)
+        if header is None:
+            raise ValueError(f"Header row {header_row} not found in {path}")
+
+        # Create temp CSV
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv", newline="", encoding="utf-8")
+        _register_temp_file(tmp.name)
+        writer = csv.writer(tmp, lineterminator="\n")
+
+        # Normalize header values to strings to avoid None column names
+        normalized_header = [
+            str(h) if h is not None else f"col_{idx+1}" for idx, h in enumerate(header)
+        ]
+        writer.writerow(normalized_header)
+
+        written = 0
+        for row in rows_iter:
+            if max_rows is not None and written >= max_rows:
+                break
+            # Truncate or pad row to header length for consistency
+            row_values = list(row[: len(normalized_header)])
+            if len(row_values) < len(normalized_header):
+                row_values.extend([""] * (len(normalized_header) - len(row_values)))
+            writer.writerow([val if val is not None else "" for val in row_values])
+            written += 1
+
+        tmp.close()
+        return tmp.name
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def read_excel_sample(path, header_row=1, n_rows=100):
+    """
+    Lightweight sampler for Excel: read header + up to n_rows of data via openpyxl streaming.
+    Returns a Polars DataFrame.
+    """
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        header_idx = header_row - 1
+        rows_iter = ws.iter_rows(values_only=True)
+        for _ in range(header_idx):
+            next(rows_iter, None)
+        header = next(rows_iter, None)
+        if header is None:
+            raise ValueError(f"Header row {header_row} not found in {path}")
+
+        normalized_header = [
+            str(h) if h is not None else f"col_{idx+1}" for idx, h in enumerate(header)
+        ]
+
+        data = []
+        for i, row in enumerate(rows_iter):
+            if i >= n_rows:
+                break
+            row_values = list(row[: len(normalized_header)])
+            if len(row_values) < len(normalized_header):
+                row_values.extend([""] * (len(normalized_header) - len(row_values)))
+            data.append(row_values)
+
+        return pl.DataFrame(data, schema=normalized_header)
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
 
 def sanitize_for_excel(val):
     """Prevent formula injection in Excel."""
@@ -66,10 +174,12 @@ def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1,
     print("Analyzing left file for Fill Down candidates...")
     fill_down_suggestions = {}
     try:
-        # Read up to 100 rows
-        lf_sample = read_data_lazy(left_csv, header_row=left_header_row).head(100)
-        df_sample = lf_sample.collect()
-        
+        # Read up to 100 rows without loading the whole Excel into memory
+        if str(left_csv).lower().endswith(('.xlsx', '.xls')):
+            df_sample = read_excel_sample(left_csv, header_row=left_header_row, n_rows=100)
+        else:
+            df_sample = read_data_lazy(left_csv, header_row=left_header_row).head(100).collect()
+
         for col in left_cols:
             if col in df_sample.columns:
                 s = df_sample[col]
@@ -334,16 +444,13 @@ def read_data_lazy(path, header_row=1):
         # If header is on row 1, skip_rows=0. If row 2, skip_rows=1.
         return pl.scan_csv(path, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
-        # Polars read_excel support for header_row is flaky across versions/engines.
-        # Use Pandas for robustness.
-        try:
-            # Pandas uses 0-based header index
-            print(f"DEBUG: Reading Excel '{path}' (type: {type(path)}) with header={header_idx} (type: {type(header_idx)})")
-            pdf = pd.read_excel(path, header=header_idx)
-            return pl.from_pandas(pdf).lazy()
-        except Exception as e:
-            # Fallback or error
-            raise ValueError(f"Error reading Excel file {path}: {e}")
+         # Stream Excel -> temp CSV to avoid loading the entire workbook into memory
+         try:
+             temp_csv = stream_excel_to_temp_csv(path, header_row=header_row)
+             # Header already included in temp CSV; no need for skip_rows
+             return pl.scan_csv(temp_csv)
+         except Exception as e:
+             raise ValueError(f"Error streaming Excel file {path} to CSV: {e}")
     else:
         raise ValueError(f"Unsupported file format: {path}")
 
