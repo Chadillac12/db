@@ -157,7 +157,7 @@ def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1,
 
 def read_mapping(mapping_path):
     """
-    Reads the confirmed mapping file.
+    Reads the confirmed mapping file using openpyxl (read-only) for memory safety.
     Returns:
         mapping_dict: {left_col: right_col} (only for confirmed mappings)
         keys: list of left_col names that are keys
@@ -165,42 +165,104 @@ def read_mapping(mapping_path):
     """
     print(f"Reading mapping from {mapping_path}...")
     try:
-        df = pd.read_excel(mapping_path, sheet_name='Columns')
+        # Use read_only=True to handle massive files (phantom rows) without OOM
+        wb = openpyxl.load_workbook(mapping_path, read_only=True, data_only=True)
+        if 'Columns' not in wb.sheetnames:
+             print(f"Error: Mapping file missing 'Columns' sheet.")
+             sys.exit(1)
+        ws = wb['Columns']
     except Exception as e:
         print(f"Error reading mapping file: {e}")
         sys.exit(1)
     
-    # Normalize columns
-    df.columns = [c.lower() for c in df.columns]
-    required = {'left_column', 'confirmed_right_column', 'is_key'}
-    if not required.issubset(df.columns):
-        print(f"Error: Mapping sheet missing required columns: {required}")
-        sys.exit(1)
-
     mapping_dict = {}
     keys = []
     fill_down_cols = []
+    
+    # Header Mapping
+    # expected headers: left_column, confirmed_right_column, is_key, fill_down
+    # We need to find the specific column indices.
+    header_map = {}
+    headers_found = False
+    
+    # Iterator
+    row_iter = ws.iter_rows(values_only=True)
+    
+    # 1. Find Headers
+    for row in row_iter:
+        # Check if this row looks like a header
+        # We look for 'left_column'
+        row_lower = [str(c).strip().lower() if c is not None else "" for c in row]
+        if 'left_column' in row_lower:
+            # Found headers
+            for idx, val in enumerate(row_lower):
+                if val:
+                    header_map[val] = idx
+            headers_found = True
+            break
+            
+    if not headers_found:
+        print("Error: Could not find 'left_column' header in 'Columns' sheet.")
+        sys.exit(1)
 
-    for _, row in df.iterrows():
-        l_col = row['left_column']
-        r_col = row['confirmed_right_column']
-        is_key = str(row['is_key']).strip().upper() == 'Y'
+    required = {'left_column', 'confirmed_right_column', 'is_key'}
+    if not required.issubset(header_map.keys()):
+        print(f"Error: Mapping sheet missing required columns: {required}")
+        sys.exit(1)
         
-        # Check fill_down. Handle missing col if old template used.
-        fill_down = False
-        if 'fill_down' in df.columns:
-            fill_down = str(row['fill_down']).strip().upper() == 'Y'
-
-        if pd.notna(r_col) and str(r_col).strip() != "":
+    col_idx_left = header_map['left_column']
+    col_idx_right = header_map['confirmed_right_column']
+    col_idx_key = header_map['is_key']
+    col_idx_fill = header_map.get('fill_down') # Optional
+    
+    # 2. Iterate Data
+    # Stop if we encounter too many consecutive empty rows (phantom row protection)
+    consecutive_empty = 0
+    max_empty = 20
+    
+    for row in row_iter:
+        # Row values tuple
+        
+        # Check if row is empty
+        if not any(row):
+            consecutive_empty += 1
+            if consecutive_empty > max_empty:
+                break
+            continue
+        consecutive_empty = 0 # Reset if valid data found
+        
+        # Get values safely
+        v_left = row[col_idx_left]
+        v_right = row[col_idx_right]
+        v_key = row[col_idx_key]
+        v_fill = row[col_idx_fill] if col_idx_fill is not None else None
+        
+        # Process left column
+        l_col = str(v_left).strip() if v_left is not None else ""
+        if not l_col:
+            continue
+            
+        # Process right column
+        r_col = str(v_right).strip() if v_right is not None else ""
+        
+        # Process flags
+        is_key = str(v_key).strip().upper() == 'Y' if v_key is not None else False
+        fill_down = str(v_fill).strip().upper() == 'Y' if v_fill is not None else False
+        
+        if r_col:
             mapping_dict[l_col] = r_col
             if is_key:
                 keys.append(l_col)
             if fill_down:
                 fill_down_cols.append(l_col)
-                
         elif is_key:
-            print(f"Warning: Column '{l_col}' is marked as key but has no mapped right column. Ignoring.")
-    
+             print(f"Warning: Column '{l_col}' is marked as key but has no mapped right column. Ignoring.")
+             
+    try:
+        wb.close()
+    except:
+        pass
+        
     return mapping_dict, keys, fill_down_cols
 
 def read_data_lazy(path, header_row=1):

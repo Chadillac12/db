@@ -1,20 +1,77 @@
+import openpyxl
+import sys
+import os
 
-import pandas as pd
+def configure_mapping(path):
+    print(f"Configuring {path}...")
+    if not os.path.exists(path):
+        print(f"Error: {path} not found.")
+        return
 
-# Load the generated template
-df = pd.read_excel('mapping_template.xlsx', sheet_name='Columns')
+    try:
+        # Load workbook
+        wb = openpyxl.load_workbook(path)
+        if 'Columns' not in wb.sheetnames:
+            print("Error: 'Columns' sheet not found.")
+            return
+        
+        ws = wb['Columns']
+        
+        # Find headers
+        header_map = {}
+        header_row_idx = None
+        
+        # Scan first few rows for headers
+        for i, row in enumerate(ws.iter_rows(max_row=10, values_only=True)):
+            row_lower = [str(c).strip().lower() if c is not None else "" for c in row]
+            if 'left_column' in row_lower:
+                for idx, val in enumerate(row_lower):
+                    if val:
+                        header_map[val] = idx
+                header_row_idx = i + 1 # 1-based for openpyxl
+                break
+        
+        if header_row_idx is None:
+            print("Error: Headers not found.")
+            return
 
-# Set ID as key
-df.loc[df['left_column'] == 'ID', 'is_key'] = 'Y'
+        col_left = header_map.get('left_column')
+        col_key = header_map.get('is_key')
+        col_fill = header_map.get('fill_down')
+        
+        if col_left is None:
+            print("Error: 'left_column' header missing.")
+            return
 
-# Set Forward Fill for Category and Subcategory
-df.loc[df['left_column'] == 'Category', 'fill_down'] = 'Y'
-df.loc[df['left_column'] == 'Subcategory', 'fill_down'] = 'Y'
+        print("Updating rows...")
+        rows_updated = 0
+        
+        # Iterate rows (skip header)
+        for row in ws.iter_rows(min_row=header_row_idx + 1):
+             if not any(c.value for c in row):
+                 continue
+                 
+             val_left = row[col_left].value
+             if val_left is None:
+                 continue
+                 
+             s_left = str(val_left).strip()
+             
+             # Apply Logic
+             if s_left == 'ID' and col_key is not None:
+                 row[col_key].value = 'Y'
+                 rows_updated += 1
+             
+             if s_left in ['Category', 'Subcategory'] and col_fill is not None:
+                 row[col_fill].value = 'Y'
+                 rows_updated += 1
+                 
+        print(f"Updated {rows_updated} cells.")
+        wb.save(path)
+        print("Saved.")
+        
+    except Exception as e:
+        print(f"Error: {e}")
 
-# Save back
-with pd.ExcelWriter('mapping_template.xlsx', engine='xlsxwriter') as writer:
-    df.to_excel(writer, sheet_name='Columns', index=False)
-    # Re-add dummy Instructions sheet to avoid read errors if tool expects it (tool just reads Columns)
-    pd.DataFrame({"Step": [], "Action": []}).to_excel(writer, sheet_name='Instructions', index=False)
-
-print("Updated mapping_template.xlsx with Keys and Fill Down.")
+if __name__ == "__main__":
+    configure_mapping('mapping_template.xlsx')

@@ -1020,12 +1020,19 @@ def main():
                 args.mapping = args.mapping
 
     # 3. Read Mapping
+    import time
+    t0 = time.time()
     mapping_dict, keys, fill_down_cols = read_mapping(args.mapping)
+    t1 = time.time()
+    log(f"Mapping read time: {t1-t0:.4f}s", 1)
     
     # 4. Compute Diff
+    t2 = time.time()
     df_diff = compute_diff(args.left, args.right, mapping_dict, keys, fill_down_cols=fill_down_cols, 
                            left_header_row=left_header, right_header_row=right_header, 
                            left_sheet=left_sheet, right_sheet=right_sheet)
+    t3 = time.time()
+    log(f"Diff computation time: {t3-t2:.4f}s", 1)
     
     # 5. Write Output
     write_excel_report(df_diff, args.out, mapping_dict, keys, max_rows=args.max_rows_excel)
