@@ -212,19 +212,41 @@ def scan_csv_with_fallback(path, skip_rows=0):
     retry once by forcing the offending column to Float64.
     """
     dtypes_overrides = infer_float_columns_from_sample(path, skip_rows=skip_rows)
+    infer_len = 0  # use full file for schema inference to reduce surprises
+    def _attempt(dtypes):
+        return pl.scan_csv(path, skip_rows=skip_rows, dtypes=dtypes if dtypes else None, infer_schema_length=infer_len)
+
     try:
-        return pl.scan_csv(path, skip_rows=skip_rows, dtypes=dtypes_overrides if dtypes_overrides else None)
+        return _attempt(dtypes_overrides)
     except Exception as e:
         msg = str(e)
+        col = None
         m = re.search(r"column [`']([^`']+)[`']", msg)
         if m:
             col = m.group(1)
+        else:
+            mnum = re.search(r"column number (\\d+)", msg, re.IGNORECASE)
+            if mnum:
+                col_idx = int(mnum.group(1)) - 1
+                try:
+                    header_cols = pl.read_csv(path, skip_rows=skip_rows, n_rows=0).columns
+                    if 0 <= col_idx < len(header_cols):
+                        col = header_cols[col_idx]
+                except Exception:
+                    pass
+        if col:
             log(f"Retrying scan with Float64 for column '{col}' due to parse error: {msg}", 1)
             if not dtypes_overrides:
                 dtypes_overrides = {}
             dtypes_overrides[col] = pl.Float64
-            return pl.scan_csv(path, skip_rows=skip_rows, dtypes=dtypes_overrides)
-        raise
+            return _attempt(dtypes_overrides)
+        # Last resort: fall back to all Utf8 to avoid hard fail
+        try:
+            header_cols = pl.read_csv(path, skip_rows=skip_rows, n_rows=0).columns
+            log(f"Retrying scan with all columns as Utf8 due to parse error: {msg}", 1)
+            return _attempt({c: pl.Utf8 for c in header_cols})
+        except Exception:
+            raise
 
 def suggest_mapping(left_cols, right_cols):
     """
