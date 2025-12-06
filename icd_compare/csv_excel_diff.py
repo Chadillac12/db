@@ -11,6 +11,7 @@ from rapidfuzz import process, fuzz
 import openpyxl
 from openpyxl.utils import get_column_letter
 import json
+import re
 
 # Increase max string length for Polars just in case
 pl.Config.set_fmt_str_lengths(1000)
@@ -182,6 +183,7 @@ def infer_float_columns_from_sample(csv_path, skip_rows=0, sample_rows=200):
         return {}
 
     float_cols = set()
+    decimal_like = re.compile(r"^-?\d*\.?\d+(e-?\d+)?$", re.IGNORECASE)
     for col in df.columns:
         series = df[col]
         # Check string tokens for decimal/exponent indicators
@@ -192,7 +194,7 @@ def infer_float_columns_from_sample(csv_path, skip_rows=0, sample_rows=200):
             if not s:
                 continue
             # If it looks numeric and has '.' or exponent, mark as float
-            if any(ch in s for ch in [".", "e", "E"]):
+            if "." in s or "e" in s.lower() or decimal_like.match(s):
                 try:
                     float(s)
                     float_cols.add(col)
@@ -202,6 +204,27 @@ def infer_float_columns_from_sample(csv_path, skip_rows=0, sample_rows=200):
     if float_cols:
         log(f"Auto-upcasting columns to Float64 based on sample: {sorted(float_cols)}", 2)
     return {c: pl.Float64 for c in float_cols}
+
+
+def scan_csv_with_fallback(path, skip_rows=0):
+    """
+    Scan CSV with optional dtype overrides inferred from a sample; on parse error,
+    retry once by forcing the offending column to Float64.
+    """
+    dtypes_overrides = infer_float_columns_from_sample(path, skip_rows=skip_rows)
+    try:
+        return pl.scan_csv(path, skip_rows=skip_rows, dtypes=dtypes_overrides if dtypes_overrides else None)
+    except Exception as e:
+        msg = str(e)
+        m = re.search(r"column [`']([^`']+)[`']", msg)
+        if m:
+            col = m.group(1)
+            log(f"Retrying scan with Float64 for column '{col}' due to parse error: {msg}", 1)
+            if not dtypes_overrides:
+                dtypes_overrides = {}
+            dtypes_overrides[col] = pl.Float64
+            return pl.scan_csv(path, skip_rows=skip_rows, dtypes=dtypes_overrides)
+        raise
 
 def suggest_mapping(left_cols, right_cols):
     """
@@ -536,16 +559,14 @@ def read_data_lazy(path, header_row=1, sheet_name=None):
     if path_str.endswith('.csv'):
         # Polars scan_csv uses skip_rows to skip lines BEFORE the header
         # If header is on row 1, skip_rows=0. If row 2, skip_rows=1.
-        dtypes_overrides = infer_float_columns_from_sample(path, skip_rows=header_idx)
-        return pl.scan_csv(path, skip_rows=header_idx, dtypes=dtypes_overrides if dtypes_overrides else None)
+        return scan_csv_with_fallback(path, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
         # Stream Excel -> temp CSV to avoid loading the entire workbook into memory
         try:
             temp_csv = stream_excel_to_temp_csv(path, header_row=header_row, sheet_name=sheet_name)
             # Header already included; no skip_rows needed.
             log(f"Streaming Excel via temp CSV {temp_csv}", 1)
-            dtypes_overrides = infer_float_columns_from_sample(temp_csv, skip_rows=0)
-            return pl.scan_csv(temp_csv, dtypes=dtypes_overrides if dtypes_overrides else None)
+            return scan_csv_with_fallback(temp_csv, skip_rows=0)
         except Exception as e:
             raise ValueError(f"Error streaming Excel file {path}: {e}")
     else:
