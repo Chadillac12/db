@@ -116,6 +116,23 @@ def create_mapping_template(left_csv, right_csv, output_path, left_header_row=1,
     df_instructions = pd.DataFrame(instructions_data, columns=["Step", "Action"])
 
     print(f"Writing mapping template to {output_path}...")
+    
+    path_str = str(output_path).lower()
+    
+    # CASE 1: CSV Output
+    if path_str.endswith('.csv'):
+        # Just write the mapping dataframe
+        try:
+             df_mapping.to_csv(output_path, index=False)
+             print(f"Created CSV mapping template at {output_path}")
+             print("Note: CSV format does not support dropdowns or instructions sheet.")
+             print("Usage: Edit the CSV directly. Set 'is_key' and 'fill_down' to 'Y'.")
+             return
+        except Exception as e:
+             print(f"Error writing CSV template: {e}")
+             sys.exit(1)
+             
+    # CASE 2: Excel Output
     with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
         df_mapping.to_excel(writer, sheet_name='Columns', index=False)
         df_instructions.to_excel(writer, sheet_name='Instructions', index=False)
@@ -164,6 +181,49 @@ def read_mapping(mapping_path):
         fill_down_cols: list of left_col names to forward fill
     """
     print(f"Reading mapping from {mapping_path}...")
+    
+    mapping_dict = {}
+    keys = []
+    fill_down_cols = []
+    
+    path_str = str(mapping_path).lower()
+    
+    # CASE 1: CSV (Simpler, Robust)
+    if path_str.endswith('.csv'):
+        try:
+            df = pd.read_csv(mapping_path)
+            # Normalize
+            df.columns = [c.lower().strip() for c in df.columns]
+            
+            required = {'left_column', 'confirmed_right_column', 'is_key'}
+            if not required.issubset(df.columns):
+                 print(f"Error: CSV mapping missing required columns: {required}")
+                 sys.exit(1)
+                 
+            for _, row in df.iterrows():
+                l_col = str(row['left_column']).strip()
+                r_col = str(row['confirmed_right_column']).strip() # Handle NaN
+                if pd.isna(row['confirmed_right_column']): r_col = ""
+                
+                is_key = str(row['is_key']).strip().upper() == 'Y'
+                fill_down = False
+                if 'fill_down' in df.columns:
+                     fill_down = str(row['fill_down']).strip().upper() == 'Y'
+                     
+                if r_col and r_col.lower() != 'nan':
+                     mapping_dict[l_col] = r_col
+                     if is_key: keys.append(l_col)
+                     if fill_down: fill_down_cols.append(l_col)
+                elif is_key:
+                     print(f"Warning: Column '{l_col}' is marked as key but has no mapped right column. Ignoring.")
+                     
+            return mapping_dict, keys, fill_down_cols
+            
+        except Exception as e:
+            print(f"Error reading CSV mapping: {e}")
+            sys.exit(1)
+
+    # CASE 2: EXCEL (Original Logic)
     try:
         # Use read_only=True to handle massive files (phantom rows) without OOM
         wb = openpyxl.load_workbook(mapping_path, read_only=True, data_only=True)
@@ -174,10 +234,6 @@ def read_mapping(mapping_path):
     except Exception as e:
         print(f"Error reading mapping file: {e}")
         sys.exit(1)
-    
-    mapping_dict = {}
-    keys = []
-    fill_down_cols = []
     
     # Header Mapping
     # expected headers: left_column, confirmed_right_column, is_key, fill_down
