@@ -568,6 +568,48 @@ def read_mapping(mapping_path):
         
     return mapping_dict, keys, fill_down_cols
 
+
+def clean_header_name(name):
+    """
+    Cleans header names by removing repeated words or phrases.
+    Examples:
+        "Name NAME" -> "Name"
+        "Sign Bit Sign Bit" -> "Sign Bit"
+        "System Name NAME" -> "System Name"
+    """
+    if not name:
+        return name
+        
+    tokens = str(name).strip().split()
+    n = len(tokens)
+    if n == 0:
+        return name
+
+    # 1. Check for whole phrase repetition
+    # We try dividing the tokens into k equal chunks
+    for chunk_size in range(1, n // 2 + 1):
+        if n % chunk_size == 0:
+            chunks = [tokens[i:i+chunk_size] for i in range(0, n, chunk_size)]
+            first_chunk_norm = [x.lower() for x in chunks[0]]
+            
+            is_repetition = True
+            for c in chunks[1:]:
+                if [x.lower() for x in c] != first_chunk_norm:
+                    is_repetition = False
+                    break
+            
+            if is_repetition:
+                base_tokens = chunks[0]
+                return clean_header_name(" ".join(base_tokens))
+
+    # 2. Consecutive Word Removal
+    cleaned_tokens = []
+    for t in tokens:
+        if not cleaned_tokens or cleaned_tokens[-1].lower() != t.lower():
+            cleaned_tokens.append(t)
+    
+    return " ".join(cleaned_tokens)
+
 def read_data_lazy(path, header_row=1, sheet_name=None):
     """
     Reads data lazily from CSV or Excel, respecting the header_row (1-based).
@@ -578,21 +620,29 @@ def read_data_lazy(path, header_row=1, sheet_name=None):
     
     log(f"Reading data lazy: {path} (Sheet: {sheet_name}, Header: {header_row})", 2)
     
+
     if path_str.endswith('.csv'):
         # Polars scan_csv uses skip_rows to skip lines BEFORE the header
         # If header is on row 1, skip_rows=0. If row 2, skip_rows=1.
-        return scan_csv_with_fallback(path, skip_rows=header_idx)
+        lf = scan_csv_with_fallback(path, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
         # Stream Excel -> temp CSV to avoid loading the entire workbook into memory
         try:
             temp_csv = stream_excel_to_temp_csv(path, header_row=header_row, sheet_name=sheet_name)
             # Header already included; no skip_rows needed.
             log(f"Streaming Excel via temp CSV {temp_csv}", 1)
-            return scan_csv_with_fallback(temp_csv, skip_rows=0)
+            lf = scan_csv_with_fallback(temp_csv, skip_rows=0)
         except Exception as e:
             raise ValueError(f"Error streaming Excel file {path}: {e}")
     else:
         raise ValueError(f"Unsupported file format: {path}")
+
+    # Apply header cleaning
+    if lf is not None:
+        rename_map = {c: clean_header_name(c) for c in lf.columns}
+        lf = lf.rename(rename_map)
+        
+    return lf
 
 def read_data_eager_headers(path, header_row=1, sheet_name=None):
     """
@@ -603,19 +653,25 @@ def read_data_eager_headers(path, header_row=1, sheet_name=None):
     
     log(f"Reading headers eager: {path} (Sheet: {sheet_name}, Header: {header_row})", 2)
 
+
     if path_str.endswith('.csv'):
         # read_csv also supports skip_rows
-        return pl.read_csv(path, n_rows=0, skip_rows=header_idx)
+        df = pl.read_csv(path, n_rows=0, skip_rows=header_idx)
     elif path_str.endswith(('.xlsx', '.xls')):
         try:
              log(f"Reading Excel Headers '{path}' with header={header_idx}, sheet_name={sheet_name}", 3)
              temp_csv = stream_excel_to_temp_csv(path, header_row=header_row, sheet_name=sheet_name, max_rows=0)
              log(f"Streaming Excel headers via temp CSV {temp_csv}", 2)
-             return pl.read_csv(temp_csv, n_rows=0)
+             df = pl.read_csv(temp_csv, n_rows=0)
         except Exception as e:
              raise ValueError(f"Error reading Excel headers {path}: {e}")
     else:
         raise ValueError(f"Unsupported file format: {path}")
+
+    if df is not None:
+         rename_map = {c: clean_header_name(c) for c in df.columns}
+         df = df.rename(rename_map)
+    return df
 
 
 
