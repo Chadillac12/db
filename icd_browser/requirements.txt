@@ -1,0 +1,9 @@
+streamlit>=1.31
+polars>=0.20.0
+pandas>=1.5
+pyarrow
+openpyxl
+xlsxwriter
+fastexcel
+rapidfuzz
+pytest
