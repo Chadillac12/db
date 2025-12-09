@@ -7,13 +7,14 @@ from typing import Any, Dict, Iterable, List, Sequence
 import polars as pl
 import streamlit as st
 
-from icd_data import load_excel_to_polars, normalize_icd
+from icd_data import load_excel_to_polars, normalize_icd, load_column_mappings
 
 # Default path can be edited in the UI; keep it configurable.
 # Resolves to repo_root/sample_data/icd_flat_example.xlsx by default.
 DEFAULT_EXCEL_PATH = (
     Path(__file__).resolve().parent.parent / "sample_data" / "icd_flat_example.xlsx"
 )
+DEFAULT_MAPPING_PATH = Path(__file__).resolve().parent / "schema_mapping.json"
 
 
 @dataclass
@@ -198,6 +199,46 @@ def load_data() -> tuple[pl.DataFrame, str]:
         st.stop()
 
 
+def load_mappings_sidebar() -> tuple[Dict[str, Dict[str, str]], str]:
+    """
+    Load column mapping overrides from JSON (path or upload).
+
+    Returns the merged mapping and a human-friendly source label.
+    """
+
+    st.sidebar.subheader("Column mapping (JSON, optional)")
+    mapping_path = st.sidebar.text_input(
+        "Mapping file path",
+        value=str(DEFAULT_MAPPING_PATH),
+        key="mapping_path",
+        help="JSON object keyed by table name (system, physport, outputport, wordstring, word, parameter, report).",
+    )
+    mapping_upload = st.sidebar.file_uploader("Upload mapping JSON", type=["json"], key="mapping_upload")
+
+    # Uploaded mapping takes precedence.
+    if mapping_upload is not None:
+        try:
+            mapping = load_column_mappings(mapping_upload.getvalue())
+            source = mapping_upload.name or "uploaded mapping"
+            return mapping, source
+        except Exception as exc:
+            st.error(f"Failed to load uploaded mapping: {exc}")
+            st.stop()
+
+    # Path-based mapping when file exists.
+    path_obj = Path(mapping_path).expanduser()
+    if path_obj.exists():
+        try:
+            mapping = load_column_mappings(path_obj)
+            return mapping, str(path_obj)
+        except Exception as exc:
+            st.error(f"Failed to load mapping from {path_obj}: {exc}")
+            st.stop()
+
+    # Fallback to defaults.
+    return load_column_mappings(None), "built-in defaults"
+
+
 def render_filters(tables: Dict[str, pl.DataFrame]) -> FilterState:
     """Render sidebar filters and return the selected filter state."""
 
@@ -312,10 +353,12 @@ def main() -> None:
     )
 
     raw_df, source_label = load_data()
+    mapping, mapping_source = load_mappings_sidebar()
     st.success(f"Loaded {raw_df.height} rows from {source_label}")
+    st.info(f"Column mapping: {mapping_source}")
 
     try:
-        tables = normalize_icd(raw_df)
+        tables = normalize_icd(raw_df, column_mappings=mapping)
     except ValueError as exc:
         st.error(f"Column validation failed: {exc}")
         st.stop()

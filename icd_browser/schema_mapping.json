@@ -1,0 +1,84 @@
+{
+  "system": {
+    "System_LOID": "System LOID LOID",
+    "System_Name": "System Name NAME",
+    "System_Bus": "System Bus LEFT or RIGHT"
+  },
+  "physport": {
+    "PhysicalPort_LOID": "A629 Physical Port Occ LOID LOID",
+    "System_LOID": "System LOID LOID",
+    "PhysicalPort_Name": "A629 Physical Port Name NAME",
+    "PhysicalPort_Occ_LOID": "A629 Physical Port Occ LOID LOID",
+    "PhysicalPort_CID": "A629 Physical Port CID Channel ID",
+    "PhysicalPort_Lane": "A629 Physical Port Lane Lane",
+    "PhysicalPort_SG": "A629 Physical Port SG Sync Gap",
+    "PhysicalPort_TG": "A629 Physical Port TG Terminal Gap",
+    "PhysicalPort_TI": "A629 Physical Port TI Transmit Interval"
+  },
+  "outputport": {
+    "OutputPort_LOID": "A629 Output Port Occ LOID LOID",
+    "PhysicalPort_LOID": "A629 Physical Port Occ LOID LOID",
+    "OutputPort_Name": "A629 Output Port Name A629 Label",
+    "OutputPort_Def_LOID": "A629 Output Port Def LOID LOID",
+    "OutputPort_Occ_LOID": "A629 Output Port Occ LOID LOID",
+    "OutputPort_Rate_ms": "A629 Output Port Rate (ms) Refresh Rate/TC Update Rate",
+    "OutputPort_StrikeCnt": "A629 Output Port Strike Count Freshness Strike Count",
+    "OutputPort_SSW": "A629 Output Port SSW A629 Label",
+    "OutputPort_Label": "A629 Output Port Label A629 Label"
+  },
+  "wordstring": {
+    "Wordstring_LOID": "A629 Wordstring LOID LOID",
+    "OutputPort_LOID": "A629 Output Port Occ LOID LOID",
+    "Wordstring_Name": "A629 Wordstring Wordstring Name NAME",
+    "Wordstring_Type": "A629 Wordstring Wordstring Type SUB_TYPE_NAME",
+    "Wordstring_Mnemonic": "A629 Wordstring Mnemonic Mnemonic",
+    "Wordstring_TotalWords": "A629 Wordstring Total Words Word Count"
+  },
+  "word": {
+    "Wordstring_LOID": "A629 Wordstring LOID LOID",
+    "Word_Seq_Num": "A629 Wordstring Word Seq Num A629 Word Number",
+    "Word_Name": "A629 Wordstring Word Name NAME",
+    "Word_Type": "A629 Wordstring Word Type SUB_TYPE_NAME",
+    "Word_Bit_Type": "A629 Wordstring Bit Type Bit Type",
+    "Word_Start_Bit": "A629 Wordstring Start Bit Local Start Bit",
+    "Word_CalcEnd_Bit": "A629 Wordstring Calc'd End Bit Start Bit + Bit Length - 1",
+    "Word_Bit_Length": "A629 Wordstring Bit Length Bit Length",
+    "Word_PVB": "A629 Wordstring PVB PVB"
+  },
+  "parameter": {
+    "Parameter_LOID": "Parameter Def LOID LOID",
+    "OutputPort_LOID": "A629 Output Port Occ LOID LOID",
+    "Parameter_Name": "Parameter Digital Output Parameter Name NAME",
+    "Parameter_Def_LOID": "Parameter Def LOID LOID",
+    "Parameter_UsgOcc_LOID": "Parameter Usg/Occ LOID LOID",
+    "Parameter_UsgBase_GUID": "Parameter Usg Base GUID Base GUID",
+    "Parameter_EU_Element": "Parameter EU Element Used",
+    "Parameter_MinorModel": "Parameter Minor Model Model",
+    "Parameter_DataType": "Parameter Data Type Bit Type/Data Format Type",
+    "Parameter_DataSize": "Parameter Data Size Data Size",
+    "Parameter_SignBit": "Parameter Sign Bit Sign Bit",
+    "Parameter_NumSigBits": "Parameter Num Sig Bits Significant Bit",
+    "Parameter_LSB_Res": "Parameter LSB Res LSB Resolution",
+    "Parameter_FullScale_LwrBnd": "Parameter Full Scaled Range Lwr Bnd Full Scaled Rng - Lwr Bnd",
+    "Parameter_FullScale_UprBnd": "Parameter Upr Bnd Full Scaled Rng - Upr Bnd",
+    "Parameter_FuncRange_Min": "Parameter Functional Range Min Functional Range Mininum",
+    "Parameter_FuncRange_Max": "Parameter Max Functional Range Maximum",
+    "Parameter_Units": "Parameter Units Functional Range Units",
+    "Parameter_PosSense": "Parameter Positive Sense Positive Sense",
+    "Parameter_DigitalState": "Parameter Digital State Digital State",
+    "Parameter_Accuracy_LwrBnd": "Parameter Accuracy Lwr Bnd Accuracy - Lower Bound",
+    "Parameter_Accuracy_UprBnd": "Parameter Upr Bnd Accuracy - Upper Bound",
+    "Parameter_Mnemonic": "Parameter Mnemonic Mnemonic",
+    "Parameter_DataDesc": "Parameter Data Description Data Description",
+    "Parameter_TI_Min_ms": "Parameter TI Min (ms) Transmit Interval Minimum",
+    "Parameter_CompInterval_ms": "Parameter Comp Interval (ms) Computation Interval",
+    "Parameter_CCSInterface": "Parameter CCS Interface CCS Interface",
+    "Parameter_Latency_ms": "Parameter Latency (ms) Latency",
+    "Parameter_Description": "Parameter Description Description"
+  },
+  "report": {
+    "Database_DateTime": "Report Timestamp Database Date/Time",
+    "Col_59": "col_59",
+    "Col_60": "col_60"
+  }
+}

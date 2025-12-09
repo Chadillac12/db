@@ -20,6 +20,7 @@ streamlit run icd_browser/icd_streamlit_app.py
   - Column chooser (persisted per session)
   - Download CSV of the current filtered/visible columns
   - Row counts reflected in headings and summary cards
+- Optional column mapping: provide a JSON file in the sidebar to override source column names without touching code. A default template lives at `icd_browser/schema_mapping.json`.
 
 ## Data loading
 

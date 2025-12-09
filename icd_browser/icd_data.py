@@ -1,17 +1,19 @@
 """
 Data loading and normalization helpers for the ARINC-629 ICD Streamlit app.
 
-The module expects a flat Excel export with the exact column headers described
-in the project README. `normalize_icd` converts that wide sheet into a set of
-normalized Polars DataFrames that mirror the conceptual schema:
-System -> PhysicalPort -> OutputPort -> Wordstring -> (Word, Parameter).
+The module expects a flat Excel export with the column headers described in the
+project README (or an override JSON mapping). `normalize_icd` converts that wide
+sheet into a set of normalized Polars DataFrames that mirror the conceptual
+schema: System -> PhysicalPort -> OutputPort -> Wordstring -> (Word, Parameter).
+You can override column names via a JSON config instead of editing code.
 """
 
 from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping
+from typing import Any, Dict, Iterable, Mapping, MutableMapping
+import json
 
 import polars as pl
 
@@ -113,14 +115,18 @@ REPORT_COLS: Mapping[str, str] = {
     "Col_60": "col_60",
 }
 
-REQUIRED_COLUMNS: set[str] = set().union(
-    SYSTEM_COLS.values(),
-    PHYSPORT_COLS.values(),
-    OUTPUTPORT_COLS.values(),
-    WORDSTRING_COLS.values(),
-    WORD_COLS.values(),
-    PARAMETER_COLS.values(),
-)
+# Default mappings bucketed by logical table name.
+DEFAULT_COLUMN_MAPS: Dict[str, Mapping[str, str]] = {
+    "system": SYSTEM_COLS,
+    "physport": PHYSPORT_COLS,
+    "outputport": OUTPUTPORT_COLS,
+    "wordstring": WORDSTRING_COLS,
+    "word": WORD_COLS,
+    "parameter": PARAMETER_COLS,
+    "report": REPORT_COLS,
+}
+
+REQUIRED_TABLE_KEYS: tuple[str, ...] = ("system", "physport", "outputport", "wordstring", "word", "parameter")
 
 
 def _cache_data(func):
@@ -138,6 +144,79 @@ def _ensure_columns(df: pl.DataFrame, required: Iterable[str], context: str) -> 
     if missing:
         missing_str = ", ".join(missing)
         raise ValueError(f"Missing required columns for {context}: {missing_str}")
+
+
+def _merge_mappings(
+    base_maps: Mapping[str, Mapping[str, str]],
+    overrides: Mapping[str, Mapping[str, str]] | None,
+) -> Dict[str, Dict[str, str]]:
+    """
+    Merge mapping overrides into defaults.
+
+    Overrides are applied per table key (system, physport, outputport, wordstring, word, parameter, report).
+    Only supplied keys/columns are overwritten; missing overrides fall back to defaults.
+    """
+
+    merged: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in base_maps.items()}
+    if overrides:
+        for table_name, mapping in overrides.items():
+            target = merged.setdefault(table_name, {})
+            target.update(mapping)
+    return merged
+
+
+def _load_mapping_json(content: str) -> Dict[str, Dict[str, str]]:
+    """Parse JSON mapping content into the expected structure."""
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in mapping config: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("Mapping config must be a JSON object keyed by table name.")
+
+    normalized: Dict[str, Dict[str, str]] = {}
+    for table, mapping in data.items():
+        if not isinstance(mapping, dict):
+            raise ValueError(f"Mapping for table '{table}' must be an object of normalized->source column pairs.")
+        normalized[table] = {str(k): str(v) for k, v in mapping.items()}
+    return normalized
+
+
+@_cache_data
+def load_column_mappings(config_path_or_bytes: Any | None = None) -> Dict[str, Dict[str, str]]:
+    """
+    Load column mappings from a JSON file/bytes; fall back to defaults when absent.
+
+    The JSON shape should be:
+    {
+      "system": {"System_LOID": "System LOID LOID", ...},
+      "physport": {...},
+      "outputport": {...},
+      "wordstring": {...},
+      "word": {...},
+      "parameter": {...},
+      "report": {...}        # optional
+    }
+    Unspecified tables/columns inherit defaults from DEFAULT_COLUMN_MAPS.
+    """
+
+    if config_path_or_bytes is None:
+        return _merge_mappings(DEFAULT_COLUMN_MAPS, None)
+
+    content: str
+    if isinstance(config_path_or_bytes, (str, Path)):
+        path = Path(config_path_or_bytes)
+        content = path.read_text(encoding="utf-8")
+    elif isinstance(config_path_or_bytes, (bytes, bytearray)):
+        content = config_path_or_bytes.decode("utf-8")
+    else:
+        # Assume file-like with read()
+        content = config_path_or_bytes.read().decode("utf-8")
+
+    overrides = _load_mapping_json(content)
+    return _merge_mappings(DEFAULT_COLUMN_MAPS, overrides)
 
 
 @_cache_data
@@ -202,101 +281,116 @@ def _select_and_rename(df: pl.DataFrame, mapping: Mapping[str, str]) -> pl.DataF
     return df.select(exprs)
 
 
-def build_system_df(df: pl.DataFrame) -> pl.DataFrame:
+def build_system_df(df: pl.DataFrame, mapping: Mapping[str, str] = SYSTEM_COLS) -> pl.DataFrame:
     """Map System_* columns; unique on System_LOID."""
 
-    _ensure_columns(df, SYSTEM_COLS.values(), "System")
+    _ensure_columns(df, mapping.values(), "System")
     return (
-        _select_and_rename(df, SYSTEM_COLS)
+        _select_and_rename(df, mapping)
         .unique(subset="System_LOID")
         .sort("System_LOID")
     )
 
 
-def build_physport_df(df: pl.DataFrame) -> pl.DataFrame:
+def build_physport_df(df: pl.DataFrame, mapping: Mapping[str, str] = PHYSPORT_COLS) -> pl.DataFrame:
     """Map PhysicalPort_* columns with System foreign key."""
 
-    _ensure_columns(df, PHYSPORT_COLS.values(), "PhysicalPort")
+    _ensure_columns(df, mapping.values(), "PhysicalPort")
     return (
-        _select_and_rename(df, PHYSPORT_COLS)
+        _select_and_rename(df, mapping)
         .unique(subset="PhysicalPort_LOID")
         .sort(["System_LOID", "PhysicalPort_LOID"])
     )
 
 
-def build_outputport_df(df: pl.DataFrame) -> pl.DataFrame:
+def build_outputport_df(df: pl.DataFrame, mapping: Mapping[str, str] = OUTPUTPORT_COLS) -> pl.DataFrame:
     """Map OutputPort_* columns with PhysicalPort foreign key."""
 
-    _ensure_columns(df, OUTPUTPORT_COLS.values(), "OutputPort")
+    _ensure_columns(df, mapping.values(), "OutputPort")
     return (
-        _select_and_rename(df, OUTPUTPORT_COLS)
+        _select_and_rename(df, mapping)
         .unique(subset="OutputPort_LOID")
         .sort(["PhysicalPort_LOID", "OutputPort_LOID"])
     )
 
 
-def build_wordstring_df(df: pl.DataFrame) -> pl.DataFrame:
+def build_wordstring_df(df: pl.DataFrame, mapping: Mapping[str, str] = WORDSTRING_COLS) -> pl.DataFrame:
     """Map Wordstring_* columns with OutputPort foreign key."""
 
-    _ensure_columns(df, WORDSTRING_COLS.values(), "Wordstring")
+    _ensure_columns(df, mapping.values(), "Wordstring")
     return (
-        _select_and_rename(df, WORDSTRING_COLS)
+        _select_and_rename(df, mapping)
         .unique(subset=["Wordstring_LOID"])
         .sort(["OutputPort_LOID", "Wordstring_LOID"])
     )
 
 
-def build_word_df(df: pl.DataFrame) -> pl.DataFrame:
+def build_word_df(df: pl.DataFrame, mapping: Mapping[str, str] = WORD_COLS) -> pl.DataFrame:
     """Map per-word attributes; one row per word sequence number."""
 
-    _ensure_columns(df, WORD_COLS.values(), "Word")
+    _ensure_columns(df, mapping.values(), "Word")
     return (
-        _select_and_rename(df, WORD_COLS)
+        _select_and_rename(df, mapping)
         .unique(subset=["Wordstring_LOID", "Word_Seq_Num"])
         .sort(["Wordstring_LOID", "Word_Seq_Num"])
     )
 
 
-def build_parameter_df(df: pl.DataFrame) -> pl.DataFrame:
+def build_parameter_df(df: pl.DataFrame, mapping: Mapping[str, str] = PARAMETER_COLS) -> pl.DataFrame:
     """Map parameter attributes; primary link via OutputPort_LOID."""
 
-    _ensure_columns(df, PARAMETER_COLS.values(), "Parameter")
+    _ensure_columns(df, mapping.values(), "Parameter")
     return (
-        _select_and_rename(df, PARAMETER_COLS)
+        _select_and_rename(df, mapping)
         .unique(subset=["Parameter_LOID"])
         .sort(["OutputPort_LOID", "Parameter_LOID"])
     )
 
 
-def build_report_df(df: pl.DataFrame) -> pl.DataFrame:
+def build_report_df(df: pl.DataFrame, mapping: Mapping[str, str] = REPORT_COLS) -> pl.DataFrame:
     """Map optional report/timestamp columns."""
 
     # Report columns are optional but included when present.
-    available_mapping = {
-        k: v for k, v in REPORT_COLS.items() if v in df.columns
-    }
+    available_mapping = {k: v for k, v in mapping.items() if v in df.columns}
     if not available_mapping:
         return pl.DataFrame()
     return _select_and_rename(df, available_mapping)
 
 
+def _required_columns(column_maps: Mapping[str, Mapping[str, str]]) -> set[str]:
+    """Compute required raw columns across required tables, ignoring optional report columns."""
+
+    required: set[str] = set()
+    for key in REQUIRED_TABLE_KEYS:
+        if key not in column_maps:
+            continue
+        required.update(column_maps[key].values())
+    return required
+
+
 @_cache_data
-def normalize_icd(df: pl.DataFrame) -> Dict[str, pl.DataFrame]:
+def normalize_icd(
+    df: pl.DataFrame,
+    column_mappings: Mapping[str, Mapping[str, str]] | None = None,
+) -> Dict[str, pl.DataFrame]:
     """
     Normalize the flat Excel Polars DataFrame into typed subtables.
 
     Returns a dict containing all normalized frames keyed by logical name.
     """
 
-    _ensure_columns(df, REQUIRED_COLUMNS, "ICD normalization")
+    merged_maps = _merge_mappings(DEFAULT_COLUMN_MAPS, column_mappings)
+    required_columns = _required_columns(merged_maps)
 
-    system_df = build_system_df(df)
-    physport_df = build_physport_df(df)
-    outputport_df = build_outputport_df(df)
-    wordstring_df = build_wordstring_df(df)
-    word_df = build_word_df(df)
-    parameter_df = build_parameter_df(df)
-    report_df = build_report_df(df)
+    _ensure_columns(df, required_columns, "ICD normalization")
+
+    system_df = build_system_df(df, merged_maps["system"])
+    physport_df = build_physport_df(df, merged_maps["physport"])
+    outputport_df = build_outputport_df(df, merged_maps["outputport"])
+    wordstring_df = build_wordstring_df(df, merged_maps["wordstring"])
+    word_df = build_word_df(df, merged_maps["word"])
+    parameter_df = build_parameter_df(df, merged_maps["parameter"])
+    report_df = build_report_df(df, merged_maps.get("report", {}))
 
     return {
         "system": system_df,
@@ -312,6 +406,7 @@ def normalize_icd(df: pl.DataFrame) -> Dict[str, pl.DataFrame]:
 __all__ = [
     "load_excel_to_polars",
     "normalize_icd",
+    "load_column_mappings",
     "build_system_df",
     "build_physport_df",
     "build_outputport_df",
@@ -326,5 +421,5 @@ __all__ = [
     "WORD_COLS",
     "PARAMETER_COLS",
     "REPORT_COLS",
-    "REQUIRED_COLUMNS",
+    "DEFAULT_COLUMN_MAPS",
 ]
