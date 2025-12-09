@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 import polars as pl
 import streamlit as st
 
-from icd_data import load_excel_to_polars, normalize_icd, load_column_mappings
+from icd_data import load_excel_to_polars, normalize_icd, load_column_mappings, load_mapping_presets
 
 # Default path can be edited in the UI; keep it configurable.
 # Resolves to repo_root/sample_data/icd_flat_example.xlsx by default.
@@ -73,6 +73,32 @@ def build_label_map(df: pl.DataFrame, key: str, fields: Iterable[str]) -> Dict[A
         label = " | ".join(pieces) if pieces else str(row.get(key))
         labels[row[key]] = label
     return labels
+
+
+def _mapping_required_columns(mapping: Dict[str, Dict[str, str]]) -> set[str]:
+    """Collect all source column names referenced in a mapping."""
+
+    required: set[str] = set()
+    for table_map in mapping.values():
+        required.update(table_map.values())
+    return required
+
+
+def _auto_select_preset(presets: Dict[str, Dict[str, Dict[str, str]]], columns: Sequence[str]) -> str | None:
+    """Pick the preset with the most matching source columns; ties fall back to default order."""
+
+    if not columns or len(presets) <= 1:
+        return None
+
+    column_set = set(columns)
+    best_name: str | None = None
+    best_score = -1
+    for name, mapping in presets.items():
+        score = len(_mapping_required_columns(mapping).intersection(column_set))
+        if score > best_score:
+            best_name = name
+            best_score = score
+    return best_name
 
 
 def apply_filters(tables: Dict[str, pl.DataFrame], filters: FilterState) -> Dict[str, pl.DataFrame]:
@@ -199,11 +225,11 @@ def load_data() -> tuple[pl.DataFrame, str]:
         st.stop()
 
 
-def load_mappings_sidebar() -> tuple[Dict[str, Dict[str, str]], str]:
+def load_mappings_sidebar(raw_columns: Sequence[str]) -> tuple[Dict[str, Dict[str, str]], str]:
     """
     Load column mapping overrides from JSON (path or upload).
 
-    Returns the merged mapping and a human-friendly source label.
+    Returns the selected merged mapping and a human-friendly source label.
     """
 
     st.sidebar.subheader("Column mapping (JSON, optional)")
@@ -215,28 +241,54 @@ def load_mappings_sidebar() -> tuple[Dict[str, Dict[str, str]], str]:
     )
     mapping_upload = st.sidebar.file_uploader("Upload mapping JSON", type=["json"], key="mapping_upload")
 
+    presets: Dict[str, Dict[str, Dict[str, str]]]
+    default_preset: str
+    source: str
+
     # Uploaded mapping takes precedence.
     if mapping_upload is not None:
         try:
-            mapping = load_column_mappings(mapping_upload.getvalue())
+            presets, default_preset = load_mapping_presets(mapping_upload.getvalue())
             source = mapping_upload.name or "uploaded mapping"
-            return mapping, source
         except Exception as exc:
             st.error(f"Failed to load uploaded mapping: {exc}")
             st.stop()
+    else:
+        # Path-based mapping when file exists.
+        path_obj = Path(mapping_path).expanduser()
+        if path_obj.exists():
+            try:
+                presets, default_preset = load_mapping_presets(path_obj)
+                source = str(path_obj)
+            except Exception as exc:
+                st.error(f"Failed to load mapping from {path_obj}: {exc}")
+                st.stop()
+        else:
+            presets, default_preset = load_mapping_presets(None)
+            source = "built-in defaults"
 
-    # Path-based mapping when file exists.
-    path_obj = Path(mapping_path).expanduser()
-    if path_obj.exists():
-        try:
-            mapping = load_column_mappings(path_obj)
-            return mapping, str(path_obj)
-        except Exception as exc:
-            st.error(f"Failed to load mapping from {path_obj}: {exc}")
-            st.stop()
+    preset_names = list(presets.keys())
+    default_index = preset_names.index(default_preset) if default_preset in preset_names else 0
 
-    # Fallback to defaults.
-    return load_column_mappings(None), "built-in defaults"
+    auto_selected = _auto_select_preset(presets, raw_columns)
+    if auto_selected and auto_selected in preset_names:
+        default_index = preset_names.index(auto_selected)
+
+    selected_preset = preset_names[default_index]
+    if len(preset_names) > 1:
+        selected_preset = st.sidebar.selectbox(
+            "Mapping preset",
+            options=preset_names,
+            index=default_index,
+            format_func=lambda name: f"{name} (default)" if name == default_preset else name,
+            key="mapping_preset_select",
+        )
+
+    mapping = presets[selected_preset]
+    label = f"{source} (preset: {selected_preset})"
+    if auto_selected and auto_selected == selected_preset and auto_selected != default_preset:
+        label += " [auto-selected by header match]"
+    return mapping, label
 
 
 def render_filters(tables: Dict[str, pl.DataFrame]) -> FilterState:
@@ -353,7 +405,7 @@ def main() -> None:
     )
 
     raw_df, source_label = load_data()
-    mapping, mapping_source = load_mappings_sidebar()
+    mapping, mapping_source = load_mappings_sidebar(raw_df.columns)
     if raw_df.is_empty():
         st.error(f"Loaded 0 rows from {source_label}. The sheet appears to be empty.")
         st.stop()

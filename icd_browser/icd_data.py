@@ -168,8 +168,15 @@ def _merge_mappings(
     return merged
 
 
-def _load_mapping_json(content: str) -> Dict[str, Dict[str, str]]:
-    """Parse JSON mapping content into the expected structure."""
+def _load_mapping_presets_from_json(content: str) -> tuple[Dict[str, Dict[str, Dict[str, str]]], str]:
+    """
+    Parse a mapping config that may contain multiple presets.
+
+    Supported shapes:
+    - Single mapping (legacy): {"system": {...}, "physport": {...}, ...}
+    - Presets: {"presets": {"vendor_a": {...}, "vendor_b": {...}}, "default_preset": "vendor_b"}
+    Returns (presets, default_preset_name).
+    """
 
     try:
         data = json.loads(content)
@@ -177,7 +184,30 @@ def _load_mapping_json(content: str) -> Dict[str, Dict[str, str]]:
         raise ValueError(f"Invalid JSON in mapping config: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise ValueError("Mapping config must be a JSON object keyed by table name.")
+        raise ValueError("Mapping config must be a JSON object.")
+
+    if "presets" in data:
+        presets_obj = data["presets"]
+        if not isinstance(presets_obj, dict) or not presets_obj:
+            raise ValueError("`presets` must be a non-empty object keyed by preset name.")
+        presets: Dict[str, Dict[str, Dict[str, str]]] = {}
+        for name, mapping in presets_obj.items():
+            presets[str(name)] = _normalize_mapping_object(mapping, context=f"preset '{name}'")
+        default_name = data.get("default_preset") or next(iter(presets))
+        if default_name not in presets:
+            raise ValueError(f"`default_preset` must reference one of: {', '.join(presets)}")
+        return presets, str(default_name)
+
+    # Legacy single-mapping payload.
+    single = _normalize_mapping_object(data)
+    return {"default": single}, "default"
+
+
+def _normalize_mapping_object(data: Any, *, context: str = "mapping config") -> Dict[str, Dict[str, str]]:
+    """Validate and normalize a mapping object keyed by table name."""
+
+    if not isinstance(data, dict):
+        raise ValueError(f"{context} must be a JSON object keyed by table name.")
 
     normalized: Dict[str, Dict[str, str]] = {}
     for table, mapping in data.items():
@@ -187,39 +217,64 @@ def _load_mapping_json(content: str) -> Dict[str, Dict[str, str]]:
     return normalized
 
 
-@_cache_data
-def load_column_mappings(config_path_or_bytes: Any | None = None) -> Dict[str, Dict[str, str]]:
-    """
-    Load column mappings from a JSON file/bytes; fall back to defaults when absent.
+def _load_mapping_json(content: str) -> Dict[str, Dict[str, str]]:
+    """Parse JSON mapping content into the expected structure."""
 
-    The JSON shape should be:
-    {
-      "system": {"System_LOID": "System LOID LOID", ...},
-      "physport": {...},
-      "outputport": {...},
-      "wordstring": {...},
-      "word": {...},
-      "parameter": {...},
-      "report": {...}        # optional
-    }
-    Unspecified tables/columns inherit defaults from DEFAULT_COLUMN_MAPS.
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in mapping config: {exc}") from exc
+
+    return _normalize_mapping_object(data)
+
+
+@_cache_data
+def load_mapping_presets(config_path_or_bytes: Any | None = None) -> tuple[Dict[str, Dict[str, Dict[str, str]]], str]:
+    """
+    Load mapping presets and return (presets, default_preset_name).
+
+    Each preset is a fully merged mapping (defaults + overrides). When no config
+    is provided, a single built-in preset named "default" is returned.
     """
 
     if config_path_or_bytes is None:
-        return _merge_mappings(DEFAULT_COLUMN_MAPS, None)
+        return {"default": _merge_mappings(DEFAULT_COLUMN_MAPS, None)}, "default"
 
-    content: str
     if isinstance(config_path_or_bytes, (str, Path)):
         path = Path(config_path_or_bytes)
         content = path.read_text(encoding="utf-8")
     elif isinstance(config_path_or_bytes, (bytes, bytearray)):
         content = config_path_or_bytes.decode("utf-8")
     else:
-        # Assume file-like with read()
         content = config_path_or_bytes.read().decode("utf-8")
 
-    overrides = _load_mapping_json(content)
-    return _merge_mappings(DEFAULT_COLUMN_MAPS, overrides)
+    presets_raw, default_name = _load_mapping_presets_from_json(content)
+    merged_presets = {name: _merge_mappings(DEFAULT_COLUMN_MAPS, mapping) for name, mapping in presets_raw.items()}
+    return merged_presets, default_name
+
+
+@_cache_data
+def load_column_mappings(config_path_or_bytes: Any | None = None, preset: str | None = None) -> Dict[str, Dict[str, str]]:
+    """
+    Load column mappings from a JSON file/bytes; fall back to defaults when absent.
+
+    Supports multiple presets in a single JSON payload:
+    {
+      "presets": {
+        "vendor_a": { "system": {...}, "physport": {...}, ... },
+        "vendor_b": { ... }
+      },
+      "default_preset": "vendor_b"
+    }
+    Legacy single-mapping JSON (system/physport/... keys at the top level) still works.
+    Unspecified tables/columns inherit defaults from DEFAULT_COLUMN_MAPS.
+    """
+
+    presets, default_name = load_mapping_presets(config_path_or_bytes)
+    chosen = preset or default_name
+    if chosen not in presets:
+        raise ValueError(f"Preset '{chosen}' not found; available presets: {', '.join(presets)}")
+    return presets[chosen]
 
 
 def _excel_source(path_or_bytes: Any) -> Any:
@@ -445,6 +500,7 @@ __all__ = [
     "load_excel_to_polars",
     "normalize_icd",
     "load_column_mappings",
+    "load_mapping_presets",
     "build_system_df",
     "build_physport_df",
     "build_outputport_df",

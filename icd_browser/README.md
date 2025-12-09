@@ -48,9 +48,21 @@ You can rename source columns without code edits. The JSON shape mirrors the nor
 }
 ```
 
+Multiple presets are supported in one file; the UI lets you pick (and will auto-select the best match based on headers):
+
+```json
+{
+  "presets": {
+    "vendor_a": { "system": { "System_LOID": "Sys LOID" }, "physport": {} },
+    "vendor_b": { "system": { "System_LOID": "System Identifier" }, "physport": {} }
+  },
+  "default_preset": "vendor_b"
+}
+```
+
 How to use:
 1) Edit `icd_browser/schema_mapping.json` (or create a new JSON file).
-2) In the sidebar, point “Mapping file path” to your JSON or upload it; uploaded takes precedence.
+2) In the sidebar, point "Mapping file path" to your JSON or upload it; uploaded takes precedence.
 3) Restart/reload after edits (mappings are cached).
 
 Required vs optional columns:
