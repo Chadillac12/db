@@ -25,18 +25,18 @@ Requires Python 3.8+.
 
 ## Usage
 
-The tool is controlled by a single YAML configuration file (`run_config.yaml`) that defines both the document schema and the input files to process.
+The tool is controlled by a single YAML configuration file (`run_config_v3.yaml`) that defines both the document schema and the input files to process.
 
 ### 1. Create a Configuration File
 
-Create a `run_config.yaml` file (see example below). This file has two main sections:
+Create a `run_config_v3.yaml` file (see example below). This file has two main sections:
 - `schema`: Defines the structure and rules for each document type.
 - `inputs`: Lists the specific files you want to process.
 
 ### 2. Run the Script
 
 ```bash
-python build_requirements_db.py --run-config run_config.yaml
+python build_requirements_db_v2.py --run-config run_config_v3.yaml
 ```
 
 ### CLI Options

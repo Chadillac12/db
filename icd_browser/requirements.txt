@@ -7,3 +7,4 @@ xlsxwriter
 fastexcel
 rapidfuzz
 pytest
+PyYAML

@@ -51,7 +51,7 @@ Run your build script to generate markdown files:
 ```powershell
 cd c:\ws_c\dev
 python build_requirements_db_v2.py `
-  --run-config schema.yaml `
+  --run-config run_config_v3.yaml `
   --output-dir output `
   --create-markdown
 ```

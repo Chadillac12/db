@@ -100,7 +100,7 @@ The script extracts section numbers from YAML frontmatter in this priority order
 ```powershell
 # Step 1: Generate flat export
 python build_requirements_db_v2.py `
-  --run-config schema.yaml `
+  --run-config run_config_v3.yaml `
   --output-dir output `
   --create-markdown
 
@@ -118,7 +118,7 @@ Create `export_both.ps1`:
 
 # Run main build
 python build_requirements_db_v2.py `
-  --run-config schema.yaml `
+  --run-config run_config_v3.yaml `
   --output-dir output `
   --create-markdown
 
