@@ -222,6 +222,40 @@ def load_column_mappings(config_path_or_bytes: Any | None = None) -> Dict[str, D
     return _merge_mappings(DEFAULT_COLUMN_MAPS, overrides)
 
 
+def _excel_source(path_or_bytes: Any) -> Any:
+    """
+    Return a rewindable Excel source for pandas/polars.
+
+    Bytes/BytesIO inputs are rewound to position 0 so multiple readers can consume them.
+    """
+
+    if isinstance(path_or_bytes, BytesIO):
+        path_or_bytes.seek(0)
+        return path_or_bytes
+    if isinstance(path_or_bytes, (bytes, bytearray)):
+        return BytesIO(path_or_bytes)
+    return path_or_bytes
+
+
+def _read_first_nonempty_sheet_with_pandas(path_or_bytes: Any):
+    """Read all sheets with pandas and return the first non-empty frame and its sheet name."""
+
+    import pandas as pd
+
+    with pd.ExcelFile(_excel_source(path_or_bytes)) as workbook:
+        sheet_names = list(workbook.sheet_names)
+        sheet_shapes = []
+        for sheet in sheet_names:
+            sheet_df = workbook.parse(sheet_name=sheet)
+            sheet_shapes.append((sheet, sheet_df.shape))
+            if not sheet_df.empty:
+                return sheet_df, sheet
+
+    raise ValueError(
+        f"Excel workbook contains no data rows; sheets inspected: {sheet_shapes or '[]'}"
+    )
+
+
 @_cache_data
 def load_excel_to_polars(path_or_bytes: Any) -> pl.DataFrame:
     """
@@ -249,9 +283,11 @@ def load_excel_to_polars(path_or_bytes: Any) -> pl.DataFrame:
 
     try:
         if hasattr(pl, "read_excel"):
-            if isinstance(path_or_bytes, (bytes, bytearray)):
-                return pl.read_excel(BytesIO(path_or_bytes))
-            return pl.read_excel(path_or_bytes)
+            df = pl.read_excel(_excel_source(path_or_bytes))
+            if not df.is_empty():
+                return df
+            # Empty frame from Polars; fall back to pandas for a second opinion.
+            print(f"polars.read_excel returned 0 rows for {source_label}; retrying with pandas.")
     except Exception as exc:  # pragma: no cover - delegated to fallback
         # Fall back to pandas path if Polars excel reader is unavailable/unstable.
         print(f"polars.read_excel failed for {source_label}; falling back to pandas. {exc}")
@@ -264,13 +300,12 @@ def load_excel_to_polars(path_or_bytes: Any) -> pl.DataFrame:
             "pandas is required to read Excel files when polars.read_excel is unavailable."
         ) from exc
 
-    if isinstance(path_or_bytes, (bytes, bytearray)):
-        buffer = BytesIO(path_or_bytes)
-        pandas_df = pd.read_excel(buffer)
-    elif isinstance(path_or_bytes, BytesIO):
-        pandas_df = pd.read_excel(path_or_bytes)
-    else:
-        pandas_df = pd.read_excel(path_or_bytes)
+    pandas_df = pd.read_excel(_excel_source(path_or_bytes))
+    if pandas_df.empty:
+        pandas_df, chosen_sheet = _read_first_nonempty_sheet_with_pandas(path_or_bytes)
+        print(
+            f"Default sheet was empty for {source_label}; loaded first non-empty sheet '{chosen_sheet}' instead."
+        )
 
     return pl.from_pandas(pandas_df)
 
