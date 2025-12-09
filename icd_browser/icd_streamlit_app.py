@@ -54,13 +54,17 @@ def ensure_columns_selected(session_key: str, options: Sequence[str]) -> List[st
     If the selection becomes empty (user deselects everything), fall back to all columns.
     """
 
-    default_selection = st.session_state.get(session_key, list(options))
+    if session_key not in st.session_state:
+        # Initialize once so Streamlit owns the key before the widget renders.
+        st.session_state[session_key] = list(options)
+
+    default_selection = st.session_state[session_key]
     selection = st.multiselect(
         "Columns to show", options=list(options), default=default_selection, key=session_key
     )
     if not selection:
+        # Do not assign back to the widget-owned key; just fall back in-return value.
         selection = list(options)
-    st.session_state[session_key] = selection
     return selection
 
 
