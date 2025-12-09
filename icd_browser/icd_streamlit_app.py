@@ -7,7 +7,13 @@ from typing import Any, Dict, Iterable, List, Sequence
 import polars as pl
 import streamlit as st
 
-from icd_data import load_excel_to_polars, normalize_icd, load_column_mappings, load_mapping_presets
+from icd_data import (
+    load_excel_to_polars,
+    normalize_icd,
+    load_column_mappings,
+    load_mapping_presets,
+    apply_fill_down,
+)
 
 # Default path can be edited in the UI; keep it configurable.
 # Resolves to repo_root/sample_data/icd_flat_example.xlsx by default.
@@ -229,11 +235,11 @@ def load_data() -> tuple[pl.DataFrame, str]:
         st.stop()
 
 
-def load_mappings_sidebar(raw_columns: Sequence[str]) -> tuple[Dict[str, Dict[str, str]], str]:
+def load_mappings_sidebar(raw_columns: Sequence[str]) -> tuple[Dict[str, Dict[str, str]], List[str], str]:
     """
     Load column mapping overrides from JSON (path or upload).
 
-    Returns the selected merged mapping and a human-friendly source label.
+    Returns (mapping, fill_down_columns, source_label).
     """
 
     st.sidebar.subheader("Column mapping (JSON, optional)")
@@ -245,7 +251,7 @@ def load_mappings_sidebar(raw_columns: Sequence[str]) -> tuple[Dict[str, Dict[st
     )
     mapping_upload = st.sidebar.file_uploader("Upload mapping JSON", type=["json"], key="mapping_upload")
 
-    presets: Dict[str, Dict[str, Dict[str, str]]]
+    presets: Dict[str, Dict[str, Any]]
     default_preset: str
     source: str
 
@@ -274,7 +280,7 @@ def load_mappings_sidebar(raw_columns: Sequence[str]) -> tuple[Dict[str, Dict[st
     preset_names = list(presets.keys())
     default_index = preset_names.index(default_preset) if default_preset in preset_names else 0
 
-    auto_selected = _auto_select_preset(presets, raw_columns)
+    auto_selected = _auto_select_preset({k: v["mapping"] for k, v in presets.items()}, raw_columns)
     if auto_selected and auto_selected in preset_names:
         default_index = preset_names.index(auto_selected)
 
@@ -288,11 +294,13 @@ def load_mappings_sidebar(raw_columns: Sequence[str]) -> tuple[Dict[str, Dict[st
             key="mapping_preset_select",
         )
 
-    mapping = presets[selected_preset]
+    selected_payload = presets[selected_preset]
+    mapping = selected_payload["mapping"]
+    fill_down = selected_payload.get("fill_down", [])
     label = f"{source} (preset: {selected_preset})"
     if auto_selected and auto_selected == selected_preset and auto_selected != default_preset:
         label += " [auto-selected by header match]"
-    return mapping, label
+    return mapping, fill_down, label
 
 
 def render_filters(tables: Dict[str, pl.DataFrame]) -> FilterState:
@@ -409,7 +417,9 @@ def main() -> None:
     )
 
     raw_df, source_label = load_data()
-    mapping, mapping_source = load_mappings_sidebar(raw_df.columns)
+    mapping, fill_down_cols, mapping_source = load_mappings_sidebar(raw_df.columns)
+    if fill_down_cols:
+        raw_df = apply_fill_down(raw_df, fill_down_cols)
     if raw_df.is_empty():
         st.error(f"Loaded 0 rows from {source_label}. The sheet appears to be empty.")
         st.stop()

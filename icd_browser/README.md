@@ -53,7 +53,7 @@ Multiple presets are supported in one file; the UI lets you pick (and will auto-
 ```json
 {
   "presets": {
-    "vendor_a": { "system": { "System_LOID": "Sys LOID" }, "physport": {} },
+    "vendor_a": { "system": { "System_LOID": "Sys LOID" }, "physport": {}, "fill_down": ["Sys LOID"] },
     "vendor_b": { "system": { "System_LOID": "System Identifier" }, "physport": {} }
   },
   "default_preset": "vendor_b"
@@ -64,6 +64,9 @@ How to use:
 1) Edit `icd_browser/schema_mapping.json` (or create a new JSON file).
 2) In the sidebar, point "Mapping file path" to your JSON or upload it; uploaded takes precedence.
 3) Restart/reload after edits (mappings are cached).
+
+Forward fill (optional):
+- Add `"fill_down": ["Raw Column A", "Raw Column B"]` inside a preset to forward-fill those raw columns (empty strings -> null -> forward fill) before normalization. This helps when parent rows are blank and should repeat down the table (e.g., System/Port IDs in flattened exports).
 
 Required vs optional columns:
 - Required tables: system, physport, outputport, wordstring, word, parameter. All columns defined in their mappings must be present unless you remove them from the mapping.

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, MutableMapping
+from typing import Any, Dict, Iterable, Mapping, MutableMapping, Tuple, List
 import json
 
 import polars as pl
@@ -168,13 +168,45 @@ def _merge_mappings(
     return merged
 
 
-def _load_mapping_presets_from_json(content: str) -> tuple[Dict[str, Dict[str, Dict[str, str]]], str]:
+def _extract_mapping_and_fill_down(preset_obj: Any, *, context: str) -> Tuple[Dict[str, Dict[str, str]], List[str]]:
+    """
+    Support two shapes:
+      1) Legacy: { "system": {...}, "physport": {...}, ... , "fill_down": [...] }
+      2) Explicit: { "mapping": { "system": {...}, ... }, "fill_down": [...] }
+    Returns (mapping_dict, fill_down_list).
+    """
+
+    fill_down: List[str] = []
+    mapping_obj = preset_obj
+
+    if isinstance(preset_obj, dict) and "mapping" in preset_obj:
+        mapping_obj = preset_obj.get("mapping", {})
+        fd_candidate = preset_obj.get("fill_down", [])
+        if fd_candidate is not None:
+            if not isinstance(fd_candidate, list):
+                raise ValueError(f"fill_down for {context} must be a list of column names.")
+            fill_down = [str(x) for x in fd_candidate]
+    elif isinstance(preset_obj, dict) and "fill_down" in preset_obj:
+        fd_candidate = preset_obj.get("fill_down", [])
+        if fd_candidate is not None:
+            if not isinstance(fd_candidate, list):
+                raise ValueError(f"fill_down for {context} must be a list of column names.")
+            fill_down = [str(x) for x in fd_candidate]
+        # Remove the helper key before normalization
+        mapping_obj = {k: v for k, v in preset_obj.items() if k != "fill_down"}
+
+    mapping = _normalize_mapping_object(mapping_obj, context=context)
+    return mapping, fill_down
+
+
+def _load_mapping_presets_from_json(content: str) -> tuple[Dict[str, Dict[str, Any]], str]:
     """
     Parse a mapping config that may contain multiple presets.
 
     Supported shapes:
     - Single mapping (legacy): {"system": {...}, "physport": {...}, ...}
     - Presets: {"presets": {"vendor_a": {...}, "vendor_b": {...}}, "default_preset": "vendor_b"}
+    Each preset may include optional "fill_down": ["Raw Column A", "Raw Column B"].
     Returns (presets, default_preset_name).
     """
 
@@ -190,17 +222,18 @@ def _load_mapping_presets_from_json(content: str) -> tuple[Dict[str, Dict[str, D
         presets_obj = data["presets"]
         if not isinstance(presets_obj, dict) or not presets_obj:
             raise ValueError("`presets` must be a non-empty object keyed by preset name.")
-        presets: Dict[str, Dict[str, Dict[str, str]]] = {}
-        for name, mapping in presets_obj.items():
-            presets[str(name)] = _normalize_mapping_object(mapping, context=f"preset '{name}'")
+        presets: Dict[str, Dict[str, Any]] = {}
+        for name, preset_data in presets_obj.items():
+            mapping, fill_down = _extract_mapping_and_fill_down(preset_data, context=f"preset '{name}'")
+            presets[str(name)] = {"mapping": mapping, "fill_down": fill_down}
         default_name = data.get("default_preset") or next(iter(presets))
         if default_name not in presets:
             raise ValueError(f"`default_preset` must reference one of: {', '.join(presets)}")
         return presets, str(default_name)
 
     # Legacy single-mapping payload.
-    single = _normalize_mapping_object(data)
-    return {"default": single}, "default"
+    mapping, fill_down = _extract_mapping_and_fill_down(data, context="mapping config")
+    return {"default": {"mapping": mapping, "fill_down": fill_down}}, "default"
 
 
 def _normalize_mapping_object(data: Any, *, context: str = "mapping config") -> Dict[str, Dict[str, str]]:
@@ -229,16 +262,18 @@ def _load_mapping_json(content: str) -> Dict[str, Dict[str, str]]:
 
 
 @_cache_data
-def load_mapping_presets(config_path_or_bytes: Any | None = None) -> tuple[Dict[str, Dict[str, Dict[str, str]]], str]:
+def load_mapping_presets(config_path_or_bytes: Any | None = None) -> tuple[Dict[str, Dict[str, Any]], str]:
     """
     Load mapping presets and return (presets, default_preset_name).
 
-    Each preset is a fully merged mapping (defaults + overrides). When no config
-    is provided, a single built-in preset named "default" is returned.
+    Each preset is a dict with:
+      - mapping: merged column map (defaults + overrides)
+      - fill_down: list of raw column names to forward-fill before normalization
+    When no config is provided, a single built-in preset named "default" is returned.
     """
 
     if config_path_or_bytes is None:
-        return {"default": _merge_mappings(DEFAULT_COLUMN_MAPS, None)}, "default"
+        return {"default": {"mapping": _merge_mappings(DEFAULT_COLUMN_MAPS, None), "fill_down": []}}, "default"
 
     if isinstance(config_path_or_bytes, (str, Path)):
         path = Path(config_path_or_bytes)
@@ -249,7 +284,10 @@ def load_mapping_presets(config_path_or_bytes: Any | None = None) -> tuple[Dict[
         content = config_path_or_bytes.read().decode("utf-8")
 
     presets_raw, default_name = _load_mapping_presets_from_json(content)
-    merged_presets = {name: _merge_mappings(DEFAULT_COLUMN_MAPS, mapping) for name, mapping in presets_raw.items()}
+    merged_presets: Dict[str, Dict[str, Any]] = {}
+    for name, payload in presets_raw.items():
+        mapping = _merge_mappings(DEFAULT_COLUMN_MAPS, payload["mapping"])
+        merged_presets[name] = {"mapping": mapping, "fill_down": payload.get("fill_down", [])}
     return merged_presets, default_name
 
 
@@ -274,7 +312,7 @@ def load_column_mappings(config_path_or_bytes: Any | None = None, preset: str | 
     chosen = preset or default_name
     if chosen not in presets:
         raise ValueError(f"Preset '{chosen}' not found; available presets: {', '.join(presets)}")
-    return presets[chosen]
+    return presets[chosen]["mapping"]
 
 
 def _excel_source(path_or_bytes: Any) -> Any:
@@ -309,6 +347,29 @@ def _read_first_nonempty_sheet_with_pandas(path_or_bytes: Any):
     raise ValueError(
         f"Excel workbook contains no data rows; sheets inspected: {sheet_shapes or '[]'}"
     )
+
+
+def apply_fill_down(df: pl.DataFrame, columns: Iterable[str]) -> pl.DataFrame:
+    """
+    Forward-fill the given raw columns (empty string -> null -> forward fill).
+
+    Missing columns are ignored.
+    """
+
+    cols_to_fill = [c for c in columns if c in df.columns]
+    if not cols_to_fill:
+        return df
+
+    exprs = []
+    for col in cols_to_fill:
+        exprs.append(
+            pl.when(pl.col(col).cast(pl.Utf8).str.strip_chars().eq(""))
+            .then(None)
+            .otherwise(pl.col(col))
+            .forward_fill()
+            .alias(col)
+        )
+    return df.with_columns(exprs)
 
 
 @_cache_data

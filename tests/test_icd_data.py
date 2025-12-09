@@ -5,7 +5,13 @@ import json
 import pandas as pd
 import pytest
 
-from icd_browser.icd_data import load_excel_to_polars, load_column_mappings, load_mapping_presets
+from icd_browser.icd_data import (
+    load_excel_to_polars,
+    load_column_mappings,
+    load_mapping_presets,
+    apply_fill_down,
+)
+import polars as pl
 
 
 def test_load_excel_to_polars_uses_first_nonempty_sheet(tmp_path):
@@ -44,7 +50,10 @@ def test_load_mapping_presets_and_selection(tmp_path):
     payload = {
         "presets": {
             "vendor_a": {"system": {"System_LOID": "SYS_A_OVERRIDE"}},
-            "vendor_b": {"system": {"System_LOID": "SYS_B_OVERRIDE"}},
+            "vendor_b": {
+                "system": {"System_LOID": "SYS_B_OVERRIDE"},
+                "fill_down": ["System LOID"],
+            },
         },
         "default_preset": "vendor_b",
     }
@@ -53,12 +62,20 @@ def test_load_mapping_presets_and_selection(tmp_path):
 
     presets, default_name = load_mapping_presets(config_path)
     assert default_name == "vendor_b"
-    assert presets["vendor_b"]["system"]["System_LOID"] == "SYS_B_OVERRIDE"
+    assert presets["vendor_b"]["mapping"]["system"]["System_LOID"] == "SYS_B_OVERRIDE"
     # Merge keeps other defaults intact
-    assert "System_Name" in presets["vendor_b"]["system"]
+    assert "System_Name" in presets["vendor_b"]["mapping"]["system"]
+    # Fill-down is carried through
+    assert presets["vendor_b"]["fill_down"] == ["System LOID"]
 
     vendor_a_mapping = load_column_mappings(config_path, preset="vendor_a")
     assert vendor_a_mapping["system"]["System_LOID"] == "SYS_A_OVERRIDE"
 
     with pytest.raises(ValueError):
         load_column_mappings(config_path, preset="does_not_exist")
+
+
+def test_apply_fill_down_handles_empty_strings():
+    df = pl.DataFrame({"A": ["", "", "x", ""], "B": [1, None, 2, None]})
+    filled = apply_fill_down(df, ["A", "B"])
+    assert filled.to_dict(as_series=False) == {"A": [None, None, "x", "x"], "B": [1, 1, 2, 2]}

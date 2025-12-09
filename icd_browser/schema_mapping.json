@@ -164,7 +164,31 @@
       },
       "report": {
         "Database_DateTime": "Report Timestamp Database Date/Time"
-      }
+      },
+      "fill_down": [
+        "System LOID",
+        "System Name",
+        "System Bus LEFT or RIGHT",
+        "A629 Physical Port Occ LOID",
+        "A629 Physical Port Name",
+        "A629 Physical Port CID Channel ID",
+        "A629 Physical Port Lane",
+        "A629 Physical Port SG Sync Gap",
+        "A629 Physical Port TG Terminal Gap",
+        "A629 Physical Port TI Transmit Interval",
+        "A629 Output Port Occ LOID",
+        "A629 Output Port Name A629 Label",
+        "A629 Output Port Def LOID",
+        "A629 Output Port Rate (ms) Refresh Rate/TC Update Rate",
+        "A629 Output Port Strike Count Freshness Strike Count",
+        "A629 Output Port Label A629 Label",
+        "A629 Output Port SSW A629 Label",
+        "A629 Wordstring LOID",
+        "A629 Wordstring Name",
+        "A629 Wordstring Type SUB_TYPE_NAME",
+        "A629 Wordstring Mnemonic",
+        "A629 Wordstring Total Words Word Count"
+      ]
     }
   },
   "default_preset": "default"
