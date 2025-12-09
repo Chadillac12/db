@@ -1047,114 +1047,131 @@ def write_excel_report(df, output_path, mapping, keys, max_rows=200000):
     writer.close()
     log("Excel report generated successfully.", 1)
 
-def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
+def write_html_report(
+    df,
+    output_path,
+    mapping,
+    keys,
+    hierarchy_cols,
+    page_size=500,
+    row_cap=200000,
+    lazy=False,
+    lazy_group_level=1,
+):
     """
-    Writes a rich HTML report with hierarchical navigation.
+    Writes a paginated HTML report with hierarchical navigation.
+    Pagination keeps the DOM small so large diffs remain responsive.
+    Optional lazy mode writes per-group JSON files (by top-level hierarchy)
+    and loads rows on demand when you click nodes.
     """
     log(f"Writing HTML report to {output_path}...", 1)
-    
-    # Convert to pandas for easier HTML generation (assuming it fits in memory)
-    row_cap = 300000  # guardrail to avoid OOM
-    if len(df) > row_cap:
-        log(f"Skipping HTML output: {len(df)} rows exceed guardrail of {row_cap}", 1)
-        return
-    pdf = df.to_pandas()
-    
-    # Pre-process for hierarchy
-    # We need to build a tree structure: Level 1 -> Level 2 -> [Rows]
-    
-    # 1. Build Tree Data
-    tree_data = {}
-    
-    # Helper to insert into tree
-    def insert_tree(node, path, row_index, status):
-        if not path:
-            if "_rows" not in node:
-                node["_rows"] = []
-            node["_rows"].append({"idx": row_index, "status": status})
-            return
-        
-        head = path[0]
-        tail = path[1:]
-        if head not in node:
-            node[head] = {}
-        insert_tree(node[head], tail, row_index, status)
 
-    # Let's add a 'status' column for easier processing
-    pdf['status'] = pdf['_merge']
-    
-    # Prepare data for JSON
+    if len(df) > row_cap:
+        log(f"Skipping HTML output: {len(df)} rows exceed guardrail of {row_cap}. Use --html-max-rows to override.", 1)
+        return
+
+    try:
+        status_counts = {row["_merge"]: int(row["count"]) for row in df["_merge"].value_counts().to_dicts()}
+    except Exception:
+        status_counts = {}
+    total_rows = len(df)
+    counts = {
+        "total": total_rows,
+        "changed": status_counts.get("changed", 0),
+        "left_only": status_counts.get("left_only", 0),
+        "right_only": status_counts.get("right_only", 0),
+        "same": status_counts.get("same", 0),
+    }
+
+    pdf = df.to_pandas()
+    pdf["status"] = pdf["_merge"]
+
     display_cols = keys + [k for k in mapping.keys() if k not in keys]
-    
-    # Create a list of dicts for the data
+
     data_list = []
     for idx, row in pdf.iterrows():
-        row_data = {"_id": idx, "status": row['status']}
+        row_data = {"_id": idx, "status": row["status"]}
+        changed_cols = set(c.strip() for c in str(row.get("changed_columns", "")).split(",") if c.strip())
+
         for col in display_cols:
             val_left = row.get(col)
             val_right = row.get(f"{col}_right")
-            
-            # Formatting
-            if row['status'] == 'changed':
-                changed_cols = str(row.get("changed_columns", "")).split(",")
-                changed_cols = [c.strip() for c in changed_cols]
-                
-                if col in changed_cols:
-                    row_data[col] = {
-                        "val": f'<span class="diff-old">{val_left}</span> <span class="diff-arrow">&rarr;</span> <span class="diff-new">{val_right}</span>',
-                        "is_diff": True
-                    }
-                else:
-                    row_data[col] = {"val": val_left, "is_diff": False}
-            elif row['status'] == 'left_only':
-                 row_data[col] = {"val": val_left, "is_diff": False}
-            elif row['status'] == 'right_only':
-                 row_data[col] = {"val": val_right, "is_diff": False}
-            else: # same
-                 row_data[col] = {"val": val_left, "is_diff": False}
-        
-        # Add hierarchy values for the tree
+
+            if row["status"] == "changed" and col in changed_cols:
+                row_data[col] = {
+                    "val": f'<span class="diff-old">{val_left}</span> <span class="diff-arrow">&rarr;</span> <span class="diff-new">{val_right}</span>',
+                    "is_diff": True,
+                }
+            elif row["status"] == "left_only":
+                row_data[col] = {"val": val_left, "is_diff": False}
+            elif row["status"] == "right_only":
+                row_data[col] = {"val": val_right, "is_diff": False}
+            else:
+                row_data[col] = {"val": val_left, "is_diff": False}
+
+        # Hierarchy values used to build the navigation tree
         h_values = []
         for h_col in hierarchy_cols:
             val = row.get(h_col)
             if pd.isna(val) and f"{h_col}_right" in row:
                 val = row.get(f"{h_col}_right")
             h_values.append(str(val) if pd.notna(val) else "N/A")
-        
+
         row_data["_h_values"] = h_values
         data_list.append(row_data)
 
-    # Build the tree structure for the sidebar
+    # Build tree for sidebar navigation
     tree_root = {}
-    
-    def add_to_tree(node, path, row_idx, status):
+
+    def add_to_tree(node, path, status):
         if "_stats" not in node:
             node["_stats"] = {"total": 0, "changed": 0, "left_only": 0, "right_only": 0, "same": 0}
-        
+
         node["_stats"]["total"] += 1
         if status in node["_stats"]:
             node["_stats"][status] += 1
-            
+
         if not path:
-            if "_ids" not in node:
-                node["_ids"] = []
-            node["_ids"].append(row_idx)
             return
 
-        head = path[0]
-        tail = path[1:]
+        head, tail = path[0], path[1:]
         if head not in node:
             node[head] = {}
-        add_to_tree(node[head], tail, row_idx, status)
+        add_to_tree(node[head], tail, status)
 
-    for i, item in enumerate(data_list):
-        add_to_tree(tree_root, item["_h_values"], i, item["status"])
+    for item in data_list:
+        add_to_tree(tree_root, item["_h_values"], item["status"])
 
-    # HTML Template (Shortened for brevity here, assuming it works)
-    # I'll rely on the existing template logic from temp_restore.py but minified slightly or just copied.
-    # To save space in this response, I'll trust the previous content was fine.
-    # But wait, I need to WRITE it.
-    
+    # Optional lazy mode: write grouped JSON files by top-level hierarchy so the browser only loads what you click.
+    assets_dir = None
+    group_files = {}
+    if lazy:
+        if not hierarchy_cols:
+            log("HTML lazy requested but no hierarchy columns; falling back to non-lazy HTML.", 1)
+            lazy = False
+        else:
+            assets_dir = os.path.splitext(output_path)[0] + "_html_assets"
+            os.makedirs(assets_dir, exist_ok=True)
+
+            group_level = max(1, lazy_group_level)
+
+            def _slug(val):
+                safe = re.sub(r"[^A-Za-z0-9]+", "_", str(val))
+                safe = safe.strip("_") or "group"
+                return safe[:60]
+
+            groups = {}
+            for row in data_list:
+                key_tuple = tuple(row["_h_values"][:group_level]) or ("ROOT",)
+                groups.setdefault(key_tuple, []).append(row)
+
+            for idx, (g_key, rows) in enumerate(groups.items()):
+                fname = f"group_{idx}_{_slug('_'.join(g_key))}.json"
+                with open(os.path.join(assets_dir, fname), "w", encoding="utf-8") as fh:
+                    json.dump(rows, fh)
+                group_files["||".join(g_key)] = fname
+            log(f"Lazy HTML assets written to {assets_dir} ({len(group_files)} groups)", 1)
+
     html_content = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -1166,7 +1183,7 @@ def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
         :root {{ --primary-color: #2c3e50; --secondary-color: #34495e; --accent-color: #3498db; --text-color: #333; --bg-color: #f4f6f7; --sidebar-width: 300px; }}
         body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; height: 100vh; background-color: var(--bg-color); color: var(--text-color); }}
         #sidebar {{ width: var(--sidebar-width); background-color: white; border-right: 1px solid #ddd; overflow-y: auto; padding: 20px; box-shadow: 2px 0 5px rgba(0,0,0,0.05); }}
-        #main {{ flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; }}
+        #main {{ flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }}
         h1, h2, h3 {{ color: var(--primary-color); }}
         .tree-node {{ margin-left: 15px; }}
         .tree-label {{ cursor: pointer; padding: 5px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }}
@@ -1176,9 +1193,20 @@ def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
         .tree-children.open {{ display: block; }}
         .badge {{ font-size: 0.8em; padding: 2px 6px; border-radius: 10px; background-color: #eee; color: #666; }}
         .badge.changed {{ background-color: #fff3cd; color: #856404; }}
-        table {{ width: 100%; border-collapse: collapse; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-top: 20px; }}
-        th, td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }}
-        th {{ background-color: var(--secondary-color); color: white; position: sticky; top: 0; }}
+        .summary-cards {{ display: flex; gap: 12px; flex-wrap: wrap; }}
+        .card {{ background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); flex: 1; text-align: center; }}
+        .card-number {{ font-size: 2em; font-weight: bold; color: var(--accent-color); }}
+        .card-label {{ color: #7f8c8d; }}
+        .toolbar {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }}
+        .filters {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+        .filters button {{ border: 1px solid #d0d7de; background: white; color: var(--primary-color); padding: 6px 10px; border-radius: 6px; cursor: pointer; }}
+        .filters button.active {{ background: var(--accent-color); color: white; border-color: var(--accent-color); }}
+        .filters button:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+        #table-container {{ flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }}
+        .table-wrapper {{ flex: 1; min-height: 0; overflow: auto; border: 1px solid #eee; border-radius: 8px; background: white; }}
+        table {{ width: 100%; border-collapse: collapse; background: white; min-width: max-content; }}
+        th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }}
+        th {{ background-color: var(--secondary-color); color: white; position: sticky; top: 0; z-index: 1; }}
         tr:hover {{ background-color: #f9f9f9; }}
         .diff-old {{ color: #e74c3c; text-decoration: line-through; }}
         .diff-new {{ color: #27ae60; font-weight: bold; }}
@@ -1188,10 +1216,10 @@ def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
         .status-left-only {{ background-color: #e74c3c; }}
         .status-right-only {{ background-color: #2ecc71; }}
         .status-same {{ background-color: #bdc3c7; }}
-        .summary-cards {{ display: flex; gap: 20px; margin-bottom: 20px; }}
-        .card {{ background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); flex: 1; text-align: center; }}
-        .card-number {{ font-size: 2em; font-weight: bold; color: var(--accent-color); }}
-        .card-label {{ color: #7f8c8d; }}
+        .pager {{ display: flex; align-items: center; gap: 10px; }}
+        .pager button {{ border: 1px solid #d0d7de; background: white; padding: 6px 10px; border-radius: 6px; cursor: pointer; }}
+        .pager button:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+        .info-banner {{ background: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 10px 12px; border-radius: 6px; }}
     </style>
 </head>
 <body>
@@ -1204,21 +1232,110 @@ def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
         <div class="card"><div class="card-number" id="count-right" style="color: #2ecc71">0</div><div class="card-label">Right Only</div></div>
     </div>
     <div id="table-container">
-        <h2 id="current-view-title">All Data</h2>
-        <table id="data-table"><thead><tr><th>Status</th>{''.join(f'<th>{col}</th>' for col in display_cols)}</tr></thead><tbody></tbody></table>
-    </div>
+        <div class="toolbar">
+            <h2 id="current-view-title">All Data</h2>
+            <div class="filters">
+                <button id="btn-all" class="active">All</button>
+                <button id="btn-changed">Changed</button>
+                <button id="btn-left">Left Only</button>
+                <button id="btn-right">Right Only</button>
+            </div>
+            <div class="pager">
+                <button id="btn-prev">Prev</button>
+                <span id="pager-info"></span>
+                <button id="btn-next">Next</button>
+            </div>
+        </div>
+        <div class="table-wrapper">
+            <table id="data-table"><thead><tr><th>Status</th>{''.join(f'<th>{col}</th>' for col in display_cols)}</tr></thead><tbody id="data-body"></tbody></table>
+        </div>
+</div>
 </div>
 <script>
-    const data = {json.dumps(data_list)};
+    const LAZY = {str(bool(lazy)).lower()};
+    const data = {json.dumps([] if lazy else data_list)};
     const tree = {json.dumps(tree_root)};
     const displayCols = {json.dumps(display_cols)};
-    document.getElementById('count-total').innerText = data.length;
-    document.getElementById('count-changed').innerText = data.filter(r => r.status === 'changed').length;
-    document.getElementById('count-left').innerText = data.filter(r => r.status === 'left_only').length;
-    document.getElementById('count-right').innerText = data.filter(r => r.status === 'right_only').length;
+    const PAGE_SIZE = {page_size};
+    const groupFiles = {json.dumps(group_files)};
+    const assetsBase = "{os.path.basename(assets_dir) if assets_dir else '.'}";
+    const GROUP_LEVEL = {lazy_group_level};
+    const statusCounts = {json.dumps(counts)};
+
+    let currentRows = [];
+    let currentPage = 1;
+    let activeFilter = 'all';
+    let activePath = [];
+    let currentTitle = 'All Data';
+    const cache = new Map();
+
+    document.getElementById('count-total').innerText = statusCounts.total;
+    document.getElementById('count-changed').innerText = statusCounts.changed;
+    document.getElementById('count-left').innerText = statusCounts.left_only;
+    document.getElementById('count-right').innerText = statusCounts.right_only;
+
+    function setLoading(isLoading, msg='Loading...') {{
+        let banner = document.getElementById('info-banner');
+        if (!banner) {{
+            banner = document.createElement('div');
+            banner.id = 'info-banner';
+            banner.className = 'info-banner';
+            document.getElementById('main').prepend(banner);
+        }}
+        if (isLoading) {{
+            banner.innerText = msg;
+            banner.style.display = 'block';
+        }} else {{
+            banner.style.display = 'none';
+        }}
+    }}
+
+    function showHint(msg) {{
+        let banner = document.getElementById('info-banner');
+        if (!banner) {{
+            banner = document.createElement('div');
+            banner.id = 'info-banner';
+            banner.className = 'info-banner';
+            document.getElementById('main').prepend(banner);
+        }}
+        banner.innerText = msg;
+        banner.style.display = 'block';
+    }}
+
+    function clearHint() {{
+        const banner = document.getElementById('info-banner');
+        if (banner) banner.style.display = 'none';
+    }}
+
+    async function loadGroup(key) {{
+        if (!groupFiles[key]) return [];
+        if (cache.has(key)) return cache.get(key);
+        const resp = await fetch(`${{assetsBase}}/${{groupFiles[key]}}`);
+        const rows = await resp.json();
+        cache.set(key, rows);
+        return rows;
+    }}
+
+    async function loadRowsForPath(path) {{
+        if (!LAZY) return data;
+        if (!path.length) return [];
+        const key = (path.slice(0, GROUP_LEVEL).join('||') || 'ROOT');
+        return loadGroup(key);
+    }}
+
+    function filterByPath(rows, path) {{
+        if (!path.length) return rows;
+        return rows.filter(r => path.every((p, idx) => (r._h_values[idx] || 'N/A') === p));
+    }}
+
+    function filterByStatus(rows) {{
+        if (activeFilter === 'all') return rows;
+        return rows.filter(r => r.status === activeFilter);
+    }}
+
     function renderTable(rows) {{
-        const tbody = document.querySelector('#data-table tbody');
-        tbody.innerHTML = '';
+        const tbody = document.getElementById('data-body');
+        const frag = document.createDocumentFragment();
         rows.forEach(row => {{
             const tr = document.createElement('tr');
             const statusTd = document.createElement('td');
@@ -1230,14 +1347,62 @@ def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
             displayCols.forEach(col => {{
                 const td = document.createElement('td');
                 const cellData = row[col];
-                if (cellData.is_diff) td.innerHTML = cellData.val;
-                else td.innerText = cellData.val !== null ? cellData.val : '';
+                if (cellData && cellData.is_diff) td.innerHTML = cellData.val;
+                else td.innerText = cellData && cellData.val !== null ? cellData.val : '';
                 tr.appendChild(td);
             }});
-            tbody.appendChild(tr);
+            frag.appendChild(tr);
         }});
+        tbody.replaceChildren(frag);
     }}
-    function renderTree(node, container, pathName) {{
+
+    function renderPage(page = 1) {{
+        const totalPages = Math.max(1, Math.ceil(currentRows.length / PAGE_SIZE));
+        currentPage = Math.min(Math.max(1, page), totalPages);
+        const start = (currentPage - 1) * PAGE_SIZE;
+        const pageRows = currentRows.slice(start, start + PAGE_SIZE);
+        renderTable(pageRows);
+        document.getElementById('pager-info').innerText = `Page ${{currentPage}} / ${{totalPages}} (${{currentRows.length}} rows)`;
+        document.getElementById('btn-prev').disabled = currentPage === 1;
+        document.getElementById('btn-next').disabled = currentPage >= totalPages;
+    }}
+
+    function setRows(rows, title) {{
+        currentRows = rows;
+        currentTitle = title || currentTitle;
+        document.getElementById('current-view-title').innerText = currentTitle;
+        renderPage(1);
+    }}
+
+    function setActiveFilter(btnId) {{
+        document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+        const btn = document.getElementById(btnId);
+        if (btn) btn.classList.add('active');
+    }}
+
+    async function updateView(path, title) {{
+        activePath = path || [];
+        setLoading(LAZY && activePath.length > 0);
+        let rows = [];
+        if (LAZY) {{
+            if (!activePath.length) {{
+                setRows([], 'Select a node to load rows');
+                showHint('Select a hierarchy node to load rows.');
+                setLoading(false);
+                return;
+            }}
+            rows = await loadRowsForPath(activePath);
+        }} else {{
+            rows = data;
+        }}
+        rows = filterByPath(rows, activePath);
+        rows = filterByStatus(rows);
+        clearHint();
+        setRows(rows, title || currentTitle);
+        setLoading(false);
+    }}
+
+    function renderTree(node, container, path) {{
         const keys = Object.keys(node).filter(k => !k.startsWith('_'));
         keys.forEach(key => {{
             const childNode = node[key];
@@ -1249,33 +1414,48 @@ def write_html_report(df, output_path, mapping, keys, hierarchy_cols):
             const changedCount = stats.changed || 0;
             const badge = changedCount > 0 ? `<span class="badge changed">${{changedCount}}</span>` : '';
             label.innerHTML = `<span>${{key}}</span> ${{badge}}`;
-            label.onclick = (e) => {{
+            const nodePath = [...path, key];
+            label.onclick = async (e) => {{
                 e.stopPropagation();
                 const childrenContainer = wrapper.querySelector('.tree-children');
                 if (childrenContainer) childrenContainer.classList.toggle('open');
-                const ids = collectIds(childNode);
-                renderTable(data.filter((r, i) => ids.includes(i)));
-                document.getElementById('current-view-title').innerText = `${{pathName}} > ${{key}}`;
                 document.querySelectorAll('.tree-label').forEach(l => l.classList.remove('active'));
                 label.classList.add('active');
+                await updateView(nodePath, nodePath.join(' > '));
             }};
             wrapper.appendChild(label);
-            if (Object.keys(childNode).some(k => !k.startsWith('_'))) {{
+            const childKeys = Object.keys(childNode).filter(k => !k.startsWith('_'));
+            if (childKeys.length) {{
                 const childrenDiv = document.createElement('div');
                 childrenDiv.className = 'tree-children';
-                renderTree(childNode, childrenDiv, `${{pathName}} > ${{key}}`);
+                renderTree(childNode, childrenDiv, nodePath);
                 wrapper.appendChild(childrenDiv);
             }}
             container.appendChild(wrapper);
         }});
     }}
-    function collectIds(node) {{
-        let ids = node._ids || [];
-        Object.keys(node).forEach(key => {{ if (!key.startsWith('_')) ids = ids.concat(collectIds(node[key])); }});
-        return ids;
+
+    renderTree(tree, document.getElementById('tree-root'), []);
+
+    function setFilter(filterName, btnId) {{
+        activeFilter = filterName;
+        setActiveFilter(btnId);
+        updateView(activePath, currentTitle);
     }}
-    renderTable(data);
-    renderTree(tree, document.getElementById('tree-root'), 'Root');
+
+    document.getElementById('btn-all').onclick = () => setFilter('all', 'btn-all');
+    document.getElementById('btn-changed').onclick = () => setFilter('changed', 'btn-changed');
+    document.getElementById('btn-left').onclick = () => setFilter('left_only', 'btn-left');
+    document.getElementById('btn-right').onclick = () => setFilter('right_only', 'btn-right');
+    document.getElementById('btn-prev').onclick = () => renderPage(currentPage - 1);
+    document.getElementById('btn-next').onclick = () => renderPage(currentPage + 1);
+
+    if (LAZY) {{
+        showHint('Select a hierarchy node to load rows.');
+        setRows([], 'Select a node to load rows');
+    }} else {{
+        updateView([], 'All Data');
+    }}
 </script>
 </body>
 </html>
@@ -1296,6 +1476,10 @@ def main():
     parser.add_argument("--html", help="Output HTML file (optional)")
     parser.add_argument("--hierarchy", help="Comma-separated list of columns for hierarchy (e.g. 'Channel,Label')")
     parser.add_argument("--max-rows-excel", type=int, default=200000, help="Max rows to export to Excel")
+    parser.add_argument("--html-max-rows", type=int, default=200000, help="Guardrail for HTML output row count")
+    parser.add_argument("--html-page-size", type=int, default=500, help="Rows per page in the HTML view")
+    parser.add_argument("--html-lazy", action="store_true", help="Write HTML that lazily loads row data by hierarchy group")
+    parser.add_argument("--html-lazy-group-level", type=int, default=1, help="How many hierarchy levels define a lazy group (default: top level)")
     
     # Header Row Arguments
     parser.add_argument("--header-row", type=int, default=1, help="Header row for both files (default: 1)")
@@ -1389,7 +1573,17 @@ def main():
                 log(f"No --hierarchy passed; using fill-down columns for HTML navigation: {hierarchy_cols}", 1)
             else:
                 log("No --hierarchy passed and no fill-down columns defined; HTML navigation will be flat.", 1)
-        write_html_report(df_diff, args.html, mapping_dict, keys, hierarchy_cols)
+        write_html_report(
+            df_diff,
+            args.html,
+            mapping_dict,
+            keys,
+            hierarchy_cols,
+            page_size=args.html_page_size,
+            row_cap=args.html_max_rows,
+            lazy=args.html_lazy,
+            lazy_group_level=args.html_lazy_group_level,
+        )
 
 if __name__ == "__main__":
     main()
