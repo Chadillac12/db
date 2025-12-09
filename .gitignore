@@ -9,3 +9,4 @@ env/
 venv/
 .idea/
 .vscode/
+icd_compare/archive/
