@@ -354,6 +354,10 @@ def main() -> None:
 
     raw_df, source_label = load_data()
     mapping, mapping_source = load_mappings_sidebar()
+    if raw_df.is_empty():
+        st.error(f"Loaded 0 rows from {source_label}. The sheet appears to be empty.")
+        st.stop()
+
     st.success(f"Loaded {raw_df.height} rows from {source_label}")
     st.info(f"Column mapping: {mapping_source}")
 

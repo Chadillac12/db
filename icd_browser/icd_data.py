@@ -134,7 +134,10 @@ def _cache_data(func):
 
     if st is None:
         return func
-    return st.cache_data(show_spinner=False)(func)
+
+    # Streamlit's default hashing for Polars calls hash_rows, which panics on empty frames.
+    hash_funcs = {pl.DataFrame: lambda df: (tuple(df.columns), df.shape)}
+    return st.cache_data(show_spinner=False, hash_funcs=hash_funcs)(func)
 
 
 def _ensure_columns(df: pl.DataFrame, required: Iterable[str], context: str) -> None:
