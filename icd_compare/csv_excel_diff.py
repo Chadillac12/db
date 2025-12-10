@@ -13,6 +13,12 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 import json
 import re
+
+# Ensure repo root is on sys.path when running from icd_compare/.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from icd_common.schema import clean_header_name
 from icd_common.normalize import normalize_icd_tables
 

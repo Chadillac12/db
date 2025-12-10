@@ -27,7 +27,7 @@ python csv_excel_diff.py --left left.xlsx --right right.xlsx
 
 2) Run diff + reports + normalized exports
 ```bash
-python csv_excel_diff.py \
+PYTHONPATH=.. python csv_excel_diff.py \
   --left left.xlsx \
   --right right.xlsx \
   --mapping mapping_template.xlsx --mapping-confirmed \
