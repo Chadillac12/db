@@ -1,77 +1,71 @@
-# CSV Excel Diff Tool
+# CSV/Excel Diff Tool
 
-A powerful command-line tool to compare two CSV or Excel files and generate a rich Excel report. It uses Excel itself as the interface for mapping columns and defining keys, making it easy to handle files with different schemas.
+A Polars-based diff tool that compares two wide CSV/Excel ICD exports, produces rich Excel/HTML reports, and can now emit normalized/forward-filled single-ICD outputs for use in the Streamlit browser.
 
 ## Features
 
-- **Excel-based Mapping UI**: Automatically generates a mapping workbook where you can define column pairs and keys.
-- **Rich Excel Output**:
-    - **Summary**: High-level stats with navigation links.
-    - **Changed (Rich)**: Shows changes in a single cell with "Old -> New" formatting (Red Strikethrough -> Blue).
-    - **Changed (Side-by-Side)**: Shows old and new values in adjacent columns.
-    - **Left/Right Only**: Full rows for unmatched data.
-- **Performance**: Built on [Polars](https://pola.rs/) for fast processing of large files.
-- **Safety**: Sanitizes output to prevent Excel formula injection.
+- **Excel-based mapping UI**: Generate a template, mark keys/fill-down, confirm mappings.
+- **Rich Excel output**: Summary, changed (rich), changed (side-by-side), left/right only.
+- **Optional HTML**: Paginated, hierarchical navigation (lazy loading available).
+- **Shared schema**: Header cleaning and fill-down defaults come from `icd_common/` (shared with the browser).
+- **New (Option 2)**: Export normalized, fill-down-applied ICDs per side (`--export-normalized-*`) to feed the Streamlit browser without rerunning diff inside the app.
 
 ## Installation
 
-1.  **Prerequisites**: Python 3.8+
-2.  **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## Usage
-
-### 1. Generate Mapping Template
-
-Run the tool with your two CSV files. It will generate `mapping_template.xlsx`.
-
+Prereq: Python 3.8+
 ```bash
-python csv_excel_diff.py --left left.csv --right right.csv
+pip install -r requirements.txt
 ```
 
-### 2. Edit Mapping
+## Typical workflow
 
-Open `mapping_template.xlsx` in Excel:
--   **Columns Sheet**:
-    -   `left_column`: Columns from the left file.
-    -   `suggested_right_column`: Fuzzy-matched suggestion from the right file.
-    -   `confirmed_right_column`: **Edit this** to confirm the mapping. Clear it to ignore the column.
-    -   `is_key`: Enter **`Y`** to mark columns as keys (used for joining rows).
--   **Save** the workbook.
-
-### 3. Run Diff
-
-Run the tool again with the confirmed mapping.
-
+1) Generate mapping template (first run)
 ```bash
-python csv_excel_diff.py --left left.csv --right right.csv --mapping mapping_template.xlsx --mapping-confirmed
+python csv_excel_diff.py --left left.xlsx --right right.xlsx
+# edit mapping_template.xlsx: confirm columns, mark keys/fill_down, save
 ```
 
-### 4. View Results
+2) Run diff + reports + normalized exports
+```bash
+python csv_excel_diff.py \
+  --left left.xlsx \
+  --right right.xlsx \
+  --mapping mapping_template.xlsx --mapping-confirmed \
+  --out diff_results.xlsx \
+  --html diff_report.html \
+  --export-normalized-left artifacts/left_normalized.xlsx \
+  --export-normalized-right artifacts/right_normalized.xlsx
+```
 
-Open `diff_results.xlsx` to see the comparison.
+3) Browse either normalized ICD in Streamlit
+```bash
+streamlit run ../icd_browser/icd_streamlit_app.py
+# In the sidebar, point to artifacts/left_normalized.xlsx (or right)
+```
 
-## CLI Options
+## Key CLI options
 
--   `--left`: Path to left file (CSV or Excel) (required).
--   `--right`: Path to right file (CSV or Excel) (required).
--   `--mapping`: Path to mapping Excel file (default: `mapping_template.xlsx`).
--   `--mapping-confirmed`: Flag to indicate mapping is ready for diffing.
--   `--out`: Output Excel file path (default: `diff_results.xlsx`).
--   `--max-rows-excel`: Max rows to export to Excel sheets (default: 200,000).
+- `--left`, `--right`: CSV/Excel inputs (required).
+- `--mapping`: Mapping Excel; creates `mapping_template.xlsx` if absent.
+- `--mapping-confirmed`: Required to run the diff after editing the template.
+- `--out`: Diff Excel (default `diff_results.xlsx`).
+- `--html`: Optional HTML report (use `--hierarchy` or rely on fill-down columns).
+- `--max-rows-excel`: Cap for Excel sheets (default 200,000).
+- `--html-max-rows`, `--html-page-size`, `--html-lazy`, `--html-lazy-group-level`: HTML tuning.
+- `--export-normalized-left`, `--export-normalized-right`: Write normalized/forward-filled ICDs. Supports:
+  - `.xlsx`/`.xls`: multi-sheet workbook (`flat_filled` + per-table sheets).
+  - `.parquet`/`.pq`: single Parquet of the flat fill-down frame.
+  - `.csv`: single CSV of the flat fill-down frame.
+  - Directory path: per-table Parquet files + `flat_filled.parquet`.
 
-## Performance & Limits
+## Performance & limits
 
--   **Excel Limits**: Excel supports up to 1,048,576 rows. The tool defaults to capping exports at 200,000 rows to ensure files remain usable. Use `--max-rows-excel` to adjust.
--   **Large Files**: For files exceeding Excel limits, the tool will truncate the Excel output.
--   **Memory**: The tool loads the joined dataset into memory. For extremely large datasets (GBs), ensure you have sufficient RAM.
+- Excel exports are capped by default to 200k rows to stay usable; adjust with `--max-rows-excel`.
+- HTML output guards at 200k rows by default; override with `--html-max-rows`.
+- Large files: the join is in-memory; ensure adequate RAM for very large datasets.
 
 ## Testing
 
-Run the provided tests:
-
 ```bash
-pytest tests/test_diff_logic.py
+PYTHONPATH=. python -m pytest icd_compare/tests
 ```

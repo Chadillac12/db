@@ -12,121 +12,36 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, MutableMapping, Tuple, List
+from typing import Any, Dict, Iterable, Mapping, Tuple, List
 import json
 
 import polars as pl
+
+from icd_common.normalize import (
+    NormalizationReport,
+    apply_fill_down as shared_apply_fill_down,
+    normalize_icd_tables,
+    resolve_fill_down_raw,
+)
+from icd_common.schema import (
+    DEFAULT_COLUMN_MAPS,
+    DEFAULT_FILL_DOWN_CANONICAL,
+    HIERARCHY_COLUMNS,
+    OUTPUTPORT_COLS,
+    PARAMETER_COLS,
+    PHYSPORT_COLS,
+    REPORT_COLS,
+    SYSTEM_COLS,
+    WORDSTRING_COLS,
+    WORD_COLS,
+    merge_column_mappings,
+)
 
 try:
     import streamlit as st
 except ImportError:  # Streamlit is required for the app but keep imports lazy for library usage.
     st = None
 
-
-# ------------------------------------------------------------------------------
-# Column name maps: normalized column name -> Excel source column
-# ------------------------------------------------------------------------------
-SYSTEM_COLS: Mapping[str, str] = {
-    "System_LOID": "System LOID LOID",
-    "System_Name": "System Name NAME",
-    "System_Bus": "System Bus LEFT or RIGHT",
-}
-
-PHYSPORT_COLS: Mapping[str, str] = {
-    "PhysicalPort_LOID": "A629 Physical Port Occ LOID LOID",
-    "System_LOID": "System LOID LOID",
-    "PhysicalPort_Name": "A629 Physical Port Name NAME",
-    "PhysicalPort_Occ_LOID": "A629 Physical Port Occ LOID LOID",
-    "PhysicalPort_CID": "A629 Physical Port CID Channel ID",
-    "PhysicalPort_Lane": "A629 Physical Port Lane Lane",
-    "PhysicalPort_SG": "A629 Physical Port SG Sync Gap",
-    "PhysicalPort_TG": "A629 Physical Port TG Terminal Gap",
-    "PhysicalPort_TI": "A629 Physical Port TI Transmit Interval",
-}
-
-OUTPUTPORT_COLS: Mapping[str, str] = {
-    "OutputPort_LOID": "A629 Output Port Occ LOID LOID",
-    "PhysicalPort_LOID": "A629 Physical Port Occ LOID LOID",
-    "OutputPort_Name": "A629 Output Port Name A629 Label",
-    "OutputPort_Def_LOID": "A629 Output Port Def LOID LOID",
-    "OutputPort_Occ_LOID": "A629 Output Port Occ LOID LOID",
-    "OutputPort_Rate_ms": "A629 Output Port Rate (ms) Refresh Rate/TC Update Rate",
-    "OutputPort_StrikeCnt": "A629 Output Port Strike Count Freshness Strike Count",
-    "OutputPort_SSW": "A629 Output Port SSW A629 Label",
-    "OutputPort_Label": "A629 Output Port Label A629 Label",
-}
-
-WORDSTRING_COLS: Mapping[str, str] = {
-    "Wordstring_LOID": "A629 Wordstring LOID LOID",
-    "OutputPort_LOID": "A629 Output Port Occ LOID LOID",
-    "Wordstring_Name": "A629 Wordstring Wordstring Name NAME",
-    "Wordstring_Type": "A629 Wordstring Wordstring Type SUB_TYPE_NAME",
-    "Wordstring_Mnemonic": "A629 Wordstring Mnemonic Mnemonic",
-    "Wordstring_TotalWords": "A629 Wordstring Total Words Word Count",
-}
-
-WORD_COLS: Mapping[str, str] = {
-    "Wordstring_LOID": "A629 Wordstring LOID LOID",
-    "Word_Seq_Num": "A629 Wordstring Word Seq Num A629 Word Number",
-    "Word_Name": "A629 Wordstring Word Name NAME",
-    "Word_Type": "A629 Wordstring Word Type SUB_TYPE_NAME",
-    "Word_Bit_Type": "A629 Wordstring Bit Type Bit Type",
-    "Word_Start_Bit": "A629 Wordstring Start Bit Local Start Bit",
-    "Word_CalcEnd_Bit": "A629 Wordstring Calc'd End Bit Start Bit + Bit Length - 1",
-    "Word_Bit_Length": "A629 Wordstring Bit Length Bit Length",
-    "Word_PVB": "A629 Wordstring PVB PVB",
-}
-
-PARAMETER_COLS: Mapping[str, str] = {
-    "Parameter_LOID": "Parameter Def LOID LOID",
-    "OutputPort_LOID": "A629 Output Port Occ LOID LOID",
-    "Parameter_Name": "Parameter Digital Output Parameter Name NAME",
-    "Parameter_Def_LOID": "Parameter Def LOID LOID",
-    "Parameter_UsgOcc_LOID": "Parameter Usg/Occ LOID LOID",
-    "Parameter_UsgBase_GUID": "Parameter Usg Base GUID Base GUID",
-    "Parameter_EU_Element": "Parameter EU Element Used",
-    "Parameter_MinorModel": "Parameter Minor Model Model",
-    "Parameter_DataType": "Parameter Data Type Bit Type/Data Format Type",
-    "Parameter_DataSize": "Parameter Data Size Data Size",
-    "Parameter_SignBit": "Parameter Sign Bit Sign Bit",
-    "Parameter_NumSigBits": "Parameter Num Sig Bits Significant Bit",
-    "Parameter_LSB_Res": "Parameter LSB Res LSB Resolution",
-    "Parameter_FullScale_LwrBnd": "Parameter Full Scaled Range Lwr Bnd Full Scaled Rng - Lwr Bnd",
-    "Parameter_FullScale_UprBnd": "Parameter Upr Bnd Full Scaled Rng - Upr Bnd",
-    "Parameter_FuncRange_Min": "Parameter Functional Range Min Functional Range Mininum",
-    "Parameter_FuncRange_Max": "Parameter Max Functional Range Maximum",
-    "Parameter_Units": "Parameter Units Functional Range Units",
-    "Parameter_PosSense": "Parameter Positive Sense Positive Sense",
-    "Parameter_DigitalState": "Parameter Digital State Digital State",
-    "Parameter_Accuracy_LwrBnd": "Parameter Accuracy Lwr Bnd Accuracy - Lower Bound",
-    "Parameter_Accuracy_UprBnd": "Parameter Upr Bnd Accuracy - Upper Bound",
-    "Parameter_Mnemonic": "Parameter Mnemonic Mnemonic",
-    "Parameter_DataDesc": "Parameter Data Description Data Description",
-    "Parameter_TI_Min_ms": "Parameter TI Min (ms) Transmit Interval Minimum",
-    "Parameter_CompInterval_ms": "Parameter Comp Interval (ms) Computation Interval",
-    "Parameter_CCSInterface": "Parameter CCS Interface CCS Interface",
-    "Parameter_Latency_ms": "Parameter Latency (ms) Latency",
-    "Parameter_Description": "Parameter Description Description",
-}
-
-REPORT_COLS: Mapping[str, str] = {
-    "Database_DateTime": "Report Timestamp Database Date/Time",
-    "Col_59": "col_59",
-    "Col_60": "col_60",
-}
-
-# Default mappings bucketed by logical table name.
-DEFAULT_COLUMN_MAPS: Dict[str, Mapping[str, str]] = {
-    "system": SYSTEM_COLS,
-    "physport": PHYSPORT_COLS,
-    "outputport": OUTPUTPORT_COLS,
-    "wordstring": WORDSTRING_COLS,
-    "word": WORD_COLS,
-    "parameter": PARAMETER_COLS,
-    "report": REPORT_COLS,
-}
-
-REQUIRED_TABLE_KEYS: tuple[str, ...] = ("system", "physport", "outputport", "wordstring", "word", "parameter")
 
 
 def _cache_data(func):
@@ -147,25 +62,6 @@ def _ensure_columns(df: pl.DataFrame, required: Iterable[str], context: str) -> 
     if missing:
         missing_str = ", ".join(missing)
         raise ValueError(f"Missing required columns for {context}: {missing_str}")
-
-
-def _merge_mappings(
-    base_maps: Mapping[str, Mapping[str, str]],
-    overrides: Mapping[str, Mapping[str, str]] | None,
-) -> Dict[str, Dict[str, str]]:
-    """
-    Merge mapping overrides into defaults.
-
-    Overrides are applied per table key (system, physport, outputport, wordstring, word, parameter, report).
-    Only supplied keys/columns are overwritten; missing overrides fall back to defaults.
-    """
-
-    merged: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in base_maps.items()}
-    if overrides:
-        for table_name, mapping in overrides.items():
-            target = merged.setdefault(table_name, {})
-            target.update(mapping)
-    return merged
 
 
 def _extract_mapping_and_fill_down(preset_obj: Any, *, context: str) -> Tuple[Dict[str, Dict[str, str]], List[str]]:
@@ -273,7 +169,9 @@ def load_mapping_presets(config_path_or_bytes: Any | None = None) -> tuple[Dict[
     """
 
     if config_path_or_bytes is None:
-        return {"default": {"mapping": _merge_mappings(DEFAULT_COLUMN_MAPS, None), "fill_down": []}}, "default"
+        default_mapping = merge_column_mappings(None, base=DEFAULT_COLUMN_MAPS)
+        default_fill, _ = resolve_fill_down_raw(default_mapping, DEFAULT_FILL_DOWN_CANONICAL, include_defaults=False)
+        return {"default": {"mapping": default_mapping, "fill_down": default_fill}}, "default"
 
     if isinstance(config_path_or_bytes, (str, Path)):
         path = Path(config_path_or_bytes)
@@ -286,8 +184,13 @@ def load_mapping_presets(config_path_or_bytes: Any | None = None) -> tuple[Dict[
     presets_raw, default_name = _load_mapping_presets_from_json(content)
     merged_presets: Dict[str, Dict[str, Any]] = {}
     for name, payload in presets_raw.items():
-        mapping = _merge_mappings(DEFAULT_COLUMN_MAPS, payload["mapping"])
-        merged_presets[name] = {"mapping": mapping, "fill_down": payload.get("fill_down", [])}
+        mapping = merge_column_mappings(payload["mapping"], base=DEFAULT_COLUMN_MAPS)
+        fill_raw, _ = resolve_fill_down_raw(
+            mapping,
+            payload.get("fill_down", DEFAULT_FILL_DOWN_CANONICAL),
+            include_defaults=True,
+        )
+        merged_presets[name] = {"mapping": mapping, "fill_down": fill_raw}
     return merged_presets, default_name
 
 
@@ -356,20 +259,7 @@ def apply_fill_down(df: pl.DataFrame, columns: Iterable[str]) -> pl.DataFrame:
     Missing columns are ignored.
     """
 
-    cols_to_fill = [c for c in columns if c in df.columns]
-    if not cols_to_fill:
-        return df
-
-    exprs = []
-    for col in cols_to_fill:
-        exprs.append(
-            pl.when(pl.col(col).cast(pl.Utf8).str.strip_chars().eq(""))
-            .then(None)
-            .otherwise(pl.col(col))
-            .forward_fill()
-            .alias(col)
-        )
-    return df.with_columns(exprs)
+    return shared_apply_fill_down(df, columns)
 
 
 @_cache_data
@@ -511,57 +401,44 @@ def build_report_df(df: pl.DataFrame, mapping: Mapping[str, str] = REPORT_COLS) 
     return _select_and_rename(df, available_mapping)
 
 
-def _required_columns(column_maps: Mapping[str, Mapping[str, str]]) -> set[str]:
-    """Compute required raw columns across required tables, ignoring optional report columns."""
-
-    required: set[str] = set()
-    for key in REQUIRED_TABLE_KEYS:
-        if key not in column_maps:
-            continue
-        required.update(column_maps[key].values())
-    return required
-
-
 @_cache_data
 def normalize_icd(
     df: pl.DataFrame,
     column_mappings: Mapping[str, Mapping[str, str]] | None = None,
-) -> Dict[str, pl.DataFrame]:
+    fill_down: Iterable[str] | None = None,
+    *,
+    return_report: bool = False,
+    infer_fill_down: bool = True,
+    merge_with_defaults: bool = True,
+) -> Dict[str, pl.DataFrame] | tuple[Dict[str, pl.DataFrame], NormalizationReport]:
     """
     Normalize the flat Excel Polars DataFrame into typed subtables.
 
-    Returns a dict containing all normalized frames keyed by logical name.
+    Returns a dict containing all normalized frames keyed by logical name, or
+    (tables, report) when return_report=True.
     """
 
-    merged_maps = _merge_mappings(DEFAULT_COLUMN_MAPS, column_mappings)
-    required_columns = _required_columns(merged_maps)
-
-    _ensure_columns(df, required_columns, "ICD normalization")
-
-    system_df = build_system_df(df, merged_maps["system"])
-    physport_df = build_physport_df(df, merged_maps["physport"])
-    outputport_df = build_outputport_df(df, merged_maps["outputport"])
-    wordstring_df = build_wordstring_df(df, merged_maps["wordstring"])
-    word_df = build_word_df(df, merged_maps["word"])
-    parameter_df = build_parameter_df(df, merged_maps["parameter"])
-    report_df = build_report_df(df, merged_maps.get("report", {}))
-
-    return {
-        "system": system_df,
-        "physport": physport_df,
-        "outputport": outputport_df,
-        "wordstring": wordstring_df,
-        "word": word_df,
-        "parameter": parameter_df,
-        "report": report_df,
-    }
+    tables, report = normalize_icd_tables(
+        df,
+        column_mappings=column_mappings,
+        fill_down=fill_down,
+        infer_fill_down=infer_fill_down,
+        clean_headers=True,
+        merge_with_defaults=merge_with_defaults,
+    )
+    if return_report:
+        return tables, report
+    return tables
 
 
 __all__ = [
     "load_excel_to_polars",
     "normalize_icd",
+    "NormalizationReport",
+    "HIERARCHY_COLUMNS",
     "load_column_mappings",
     "load_mapping_presets",
+    "apply_fill_down",
     "build_system_df",
     "build_physport_df",
     "build_outputport_df",
@@ -577,4 +454,6 @@ __all__ = [
     "PARAMETER_COLS",
     "REPORT_COLS",
     "DEFAULT_COLUMN_MAPS",
+    "DEFAULT_FILL_DOWN_CANONICAL",
+    "HIERARCHY_COLUMNS",
 ]

@@ -4,6 +4,7 @@ import os
 import csv
 import tempfile
 import atexit
+from pathlib import Path
 import pandas as pd
 import polars as pl
 import xlsxwriter
@@ -12,6 +13,8 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 import json
 import re
+from icd_common.schema import clean_header_name
+from icd_common.normalize import normalize_icd_tables
 
 # Increase max string length for Polars just in case
 pl.Config.set_fmt_str_lengths(1000)
@@ -568,47 +571,6 @@ def read_mapping(mapping_path):
         
     return mapping_dict, keys, fill_down_cols
 
-
-def clean_header_name(name):
-    """
-    Cleans header names by removing repeated words or phrases.
-    Examples:
-        "Name NAME" -> "Name"
-        "Sign Bit Sign Bit" -> "Sign Bit"
-        "System Name NAME" -> "System Name"
-    """
-    if not name:
-        return name
-        
-    tokens = str(name).strip().split()
-    n = len(tokens)
-    if n == 0:
-        return name
-
-    # 1. Check for whole phrase repetition
-    # We try dividing the tokens into k equal chunks
-    for chunk_size in range(1, n // 2 + 1):
-        if n % chunk_size == 0:
-            chunks = [tokens[i:i+chunk_size] for i in range(0, n, chunk_size)]
-            first_chunk_norm = [x.lower() for x in chunks[0]]
-            
-            is_repetition = True
-            for c in chunks[1:]:
-                if [x.lower() for x in c] != first_chunk_norm:
-                    is_repetition = False
-                    break
-            
-            if is_repetition:
-                base_tokens = chunks[0]
-                return clean_header_name(" ".join(base_tokens))
-
-    # 2. Consecutive Word Removal
-    cleaned_tokens = []
-    for t in tokens:
-        if not cleaned_tokens or cleaned_tokens[-1].lower() != t.lower():
-            cleaned_tokens.append(t)
-    
-    return " ".join(cleaned_tokens)
 
 def read_data_lazy(path, header_row=1, sheet_name=None):
     """
@@ -1466,6 +1428,75 @@ def write_html_report(
     
     log(f"HTML report written to {output_path}", 1)
 
+
+def _write_normalized_output(tables, flat_df, output_path, label):
+    """
+    Persist normalized ICD tables plus the flat, fill-down-applied frame.
+
+    - .xlsx/.xls => multi-sheet workbook (flat_filled + per-table sheets)
+    - .parquet   => single Parquet of the flat frame
+    - .csv       => single CSV of the flat frame
+    - directory  => per-table Parquet files + flat_filled.parquet
+    """
+
+    path = Path(output_path)
+    suffix = path.suffix.lower()
+
+    if suffix in (".xlsx", ".xls"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
+            flat_df.to_pandas().to_excel(writer, sheet_name="flat_filled", index=False)
+            for name, tbl in tables.items():
+                tbl.to_pandas().to_excel(writer, sheet_name=name, index=False)
+        log(f"{label} normalized Excel written to {path}", 1)
+        return
+
+    if suffix in (".parquet", ".pq"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flat_df.write_parquet(path)
+        log(f"{label} normalized flat Parquet written to {path}", 1)
+        return
+
+    if suffix == ".csv":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flat_df.write_csv(path)
+        log(f"{label} normalized flat CSV written to {path}", 1)
+        return
+
+    # Treat as directory for per-table exports.
+    path.mkdir(parents=True, exist_ok=True)
+    flat_df.write_parquet(path / "flat_filled.parquet")
+    for name, tbl in tables.items():
+        tbl.write_parquet(path / f"{name}.parquet")
+    log(f"{label} normalized tables written to directory {path}", 1)
+
+
+def export_normalized_side(path, header_row, sheet_name, output_path, label):
+    """
+    Normalize and forward-fill a single ICD export using the shared schema,
+    then write it to the requested location. Intended for feeding the browser.
+    """
+
+    log(f"Normalizing {label} for browser export -> {output_path}", 1)
+    lf = read_data_lazy(path, header_row=header_row, sheet_name=sheet_name)
+    df = lf.collect()
+
+    tables, report, flat_df = normalize_icd_tables(
+        df,
+        column_mappings=None,
+        fill_down=None,
+        infer_fill_down=True,
+        clean_headers=True,  # align with shared schema cleaner
+        merge_with_defaults=True,
+        return_flat=True,
+    )
+    log(
+        f"{label} normalized counts: raw_rows={report.raw_row_count}, "
+        + ", ".join(f"{k}={v}" for k, v in report.table_row_counts.items()),
+        1,
+    )
+    _write_normalized_output(tables, flat_df, output_path, label)
+
 def main():
     parser = argparse.ArgumentParser(description="CSV/Excel Diff Tool with Excel Output")
     parser.add_argument("--left", required=True, help="Path to left file (CSV or Excel)")
@@ -1480,6 +1511,8 @@ def main():
     parser.add_argument("--html-page-size", type=int, default=500, help="Rows per page in the HTML view")
     parser.add_argument("--html-lazy", action="store_true", help="Write HTML that lazily loads row data by hierarchy group")
     parser.add_argument("--html-lazy-group-level", type=int, default=1, help="How many hierarchy levels define a lazy group (default: top level)")
+    parser.add_argument("--export-normalized-left", help="Optional path to export the left ICD normalized/filled (xlsx/parquet/csv/dir)")
+    parser.add_argument("--export-normalized-right", help="Optional path to export the right ICD normalized/filled (xlsx/parquet/csv/dir)")
     
     # Header Row Arguments
     parser.add_argument("--header-row", type=int, default=1, help="Header row for both files (default: 1)")
@@ -1545,6 +1578,21 @@ def main():
     t1 = time.time()
     log(f"Mapping loaded. Left cols mapped: {len(mapping_dict)} | Keys: {keys} | Fill down: {fill_down_cols}", 1)
     log(f"Mapping read time: {t1-t0:.4f}s", 2)
+
+    # Optional: export normalized/filled single-ICD views for Streamlit browser consumption.
+    if args.export_normalized_left:
+        try:
+            export_normalized_side(args.left, left_header, left_sheet, args.export_normalized_left, "Left")
+        except Exception as exc:
+            log(f"Failed to export normalized Left ICD: {exc}", 1)
+            sys.exit(1)
+
+    if args.export_normalized_right:
+        try:
+            export_normalized_side(args.right, right_header, right_sheet, args.export_normalized_right, "Right")
+        except Exception as exc:
+            log(f"Failed to export normalized Right ICD: {exc}", 1)
+            sys.exit(1)
     
     # 4. Compute Diff
     t2 = time.time()

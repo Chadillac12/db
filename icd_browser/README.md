@@ -31,6 +31,7 @@ Common Streamlit CLI flags:
 - Default Excel path: edit the sidebar field (defaults to `sample_data/icd_flat_example.xlsx`; update to your file).
 - File uploader: drop an `.xls`/`.xlsx` export and it will override the default path for the session.
 - Data loading and normalization are cached for responsiveness; missing required columns are surfaced with clear errors.
+- From the diff tool: you can point the browser at the normalized outputs emitted by `csv_excel_diff.py --export-normalized-left/--export-normalized-right`. The `.xlsx` exports include a `flat_filled` sheet plus per-table sheets; any of these files work as the input to the browser.
 
 ## Column mapping overrides (JSON)
 
@@ -67,6 +68,11 @@ How to use:
 
 Forward fill (optional):
 - Add `"fill_down": ["Raw Column A", "Raw Column B"]` inside a preset to forward-fill those raw columns (empty strings -> null -> forward fill) before normalization. This helps when parent rows are blank and should repeat down the table (e.g., System/Port IDs in flattened exports).
+
+Shared schema/normalization:
+- The canonical ICD schema, header cleaner, and fill-down defaults now live in `icd_common/` and are shared by the Streamlit browser and the legacy diff tool.
+- Add or rename ICD columns in `icd_common/schema.py`; the browser and diff will pick up the change through the shared mapping utilities.
+- Sidebar diagnostics in the app report row counts per stage so it is easy to see where rows drop if a mapping is incomplete.
 
 Required vs optional columns:
 - Required tables: system, physport, outputport, wordstring, word, parameter. All columns defined in their mappings must be present unless you remove them from the mapping.

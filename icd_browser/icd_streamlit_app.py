@@ -14,6 +14,7 @@ from icd_data import (
     load_mapping_presets,
     apply_fill_down,
 )
+from icd_common.normalize import build_hierarchy_index
 
 # Default path can be edited in the UI; keep it configurable.
 # Resolves to repo_root/sample_data/icd_flat_example.xlsx by default.
@@ -171,6 +172,70 @@ def apply_filters(tables: Dict[str, pl.DataFrame], filters: FilterState) -> Dict
         "report": report_df,
     }
 
+
+def render_hierarchy_tree(hierarchy_df: pl.DataFrame) -> None:
+    """Render a hierarchical browser with expandable sections."""
+
+    st.markdown("### Hierarchy (System → Physical Port → Output Port → Wordstring)")
+    if hierarchy_df.is_empty():
+        st.info("No hierarchy rows after filters/normalization.")
+        return
+
+    system_groups = hierarchy_df.partition_by("System_LOID", maintain_order=True)
+    for system_df in system_groups:
+        sys_meta = system_df.select(["System_LOID", "System_Name", "System_Bus"]).unique()
+        sys_row = sys_meta.to_dicts()[0] if sys_meta.height else {}
+        sys_label = sys_row.get("System_Name") or sys_row.get("System_LOID") or "System"
+        sys_words = int(system_df["word_count"].sum() or 0)
+        sys_params = int(system_df["parameter_count"].sum() or 0)
+        sys_wordstrings = system_df.height
+        sys_header = f"{sys_label} – {sys_wordstrings} wordstrings, {sys_words} words, {sys_params} parameters"
+
+        with st.expander(sys_header, expanded=False):
+            phys_groups = system_df.partition_by("PhysicalPort_LOID", maintain_order=True)
+            for phys_df in phys_groups:
+                phys_meta = phys_df.select(
+                    ["PhysicalPort_LOID", "PhysicalPort_Name", "PhysicalPort_CID", "PhysicalPort_Lane"]
+                ).unique()
+                phys_row = phys_meta.to_dicts()[0] if phys_meta.height else {}
+                phys_label = phys_row.get("PhysicalPort_Name") or phys_row.get("PhysicalPort_LOID") or "Physical Port"
+                phys_wordstrings = phys_df.height
+                with st.expander(f"{phys_label} – {phys_wordstrings} wordstrings", expanded=False):
+                    output_groups = phys_df.partition_by("OutputPort_LOID", maintain_order=True)
+                    for output_df in output_groups:
+                        output_meta = output_df.select(
+                            ["OutputPort_LOID", "OutputPort_Name", "OutputPort_Label", "OutputPort_Rate_ms"]
+                        ).unique()
+                        output_row = output_meta.to_dicts()[0] if output_meta.height else {}
+                        output_label = (
+                            output_row.get("OutputPort_Name")
+                            or output_row.get("OutputPort_Label")
+                            or output_row.get("OutputPort_LOID")
+                            or "Output Port"
+                        )
+                        wordstrings_table = output_df.select(
+                            [
+                                "Wordstring_LOID",
+                                "Wordstring_Name",
+                                "Wordstring_Mnemonic",
+                                "Wordstring_Type",
+                                "word_count",
+                                "parameter_count",
+                            ]
+                        )
+                        port_words = int(output_df["word_count"].sum() or 0)
+                        port_params = int(output_df["parameter_count"].sum() or 0)
+                        port_title = (
+                            f"{output_label} – {len(wordstrings_table)} wordstrings, "
+                            f"{port_words} words, {port_params} parameters"
+                        )
+                        with st.expander(port_title, expanded=False):
+                            st.dataframe(
+                                wordstrings_table.to_pandas(),
+                                hide_index=True,
+                                use_container_width=True,
+                                height=260,
+                            )
 
 def render_table_section(
     title: str, table_key: str, df: pl.DataFrame, default_columns: Sequence[str], height: int = 320
@@ -428,7 +493,13 @@ def main() -> None:
     st.info(f"Column mapping: {mapping_source}")
 
     try:
-        tables = normalize_icd(raw_df, column_mappings=mapping)
+        tables, report = normalize_icd(
+            raw_df,
+            column_mappings=mapping,
+            fill_down=fill_down_cols,
+            return_report=True,
+            infer_fill_down=True,
+        )
     except ValueError as exc:
         st.error(f"Column validation failed: {exc}")
         st.stop()
@@ -436,38 +507,60 @@ def main() -> None:
         st.error(f"Failed to normalize ICD data: {exc}")
         st.stop()
 
+    with st.sidebar.expander("Normalization diagnostics", expanded=False):
+        st.write(
+            {
+                "raw_rows": report.raw_row_count,
+                "fill_down_applied": len(report.fill_down_raw),
+                "inferred_fill_down": report.inferred_fill_down,
+            }
+        )
+        st.write(report.table_row_counts)
+
     filters = render_filters(tables)
     filtered_tables = apply_filters(tables, filters)
+    hierarchy_df = build_hierarchy_index(filtered_tables)
 
     render_summary_cards(filtered_tables)
 
     tabs = st.tabs(
-        ["Systems", "Physical Ports", "Output Ports", "Wordstrings", "Words", "Parameters", "Report"]
+        [
+            "Hierarchy",
+            "Systems",
+            "Physical Ports",
+            "Output Ports",
+            "Wordstrings",
+            "Words",
+            "Parameters",
+            "Report",
+        ]
     )
 
     with tabs[0]:
-        render_table_section("Systems", "system", filtered_tables["system"], filtered_tables["system"].columns)
+        render_hierarchy_tree(hierarchy_df)
     with tabs[1]:
+        render_table_section("Systems", "system", filtered_tables["system"], filtered_tables["system"].columns)
+    with tabs[2]:
         render_table_section(
             "Physical Ports", "physport", filtered_tables["physport"], filtered_tables["physport"].columns
         )
-    with tabs[2]:
+    with tabs[3]:
         render_table_section(
             "Output Ports",
             "outputport",
             filtered_tables["outputport"],
             filtered_tables["outputport"].columns,
         )
-    with tabs[3]:
+    with tabs[4]:
         render_table_section(
             "Wordstrings",
             "wordstring",
             filtered_tables["wordstring"],
             filtered_tables["wordstring"].columns,
         )
-    with tabs[4]:
-        render_table_section("Words", "word", filtered_tables["word"], filtered_tables["word"].columns)
     with tabs[5]:
+        render_table_section("Words", "word", filtered_tables["word"], filtered_tables["word"].columns)
+    with tabs[6]:
         render_table_section(
             "Parameters",
             "parameter",
@@ -475,7 +568,7 @@ def main() -> None:
             filtered_tables["parameter"].columns,
             height=400,
         )
-    with tabs[6]:
+    with tabs[7]:
         if filtered_tables["report"].is_empty():
             st.info("No report metadata available in this export.")
         else:
