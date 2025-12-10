@@ -10,12 +10,18 @@ You can override column names via a JSON config instead of editing code.
 
 from __future__ import annotations
 
+import sys
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Tuple, List
 import json
 
 import polars as pl
+
+# Ensure repo root is on sys.path when running from icd_browser/.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from icd_common.normalize import (
     NormalizationReport,

@@ -13,13 +13,14 @@ import openpyxl
 from openpyxl.utils import get_column_letter
 import json
 import re
+import sqlite3
 
 # Ensure repo root is on sys.path when running from icd_compare/.
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from icd_common.schema import clean_header_name
+from icd_common.schema import clean_header_name, DEFAULT_FILL_DOWN_CANONICAL, TABLE_SCHEMAS
 from icd_common.normalize import normalize_icd_tables
 
 # Increase max string length for Polars just in case
@@ -1477,13 +1478,30 @@ def _write_normalized_output(tables, flat_df, output_path, label):
     log(f"{label} normalized tables written to directory {path}", 1)
 
 
-def export_normalized_side(path, header_row, sheet_name, output_path, label):
+def write_sqlite_output(tables, flat_df, output_path, label):
     """
-    Normalize and forward-fill a single ICD export using the shared schema,
-    then write it to the requested location. Intended for feeding the browser.
+    Write normalized tables + flat frame to a SQLite database.
+    Tables: flat_filled + each normalized table name.
     """
 
-    log(f"Normalizing {label} for browser export -> {output_path}", 1)
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        flat_df.to_pandas().to_sql("flat_filled", conn, if_exists="replace", index=False)
+        for name, tbl in tables.items():
+            tbl.to_pandas().to_sql(name, conn, if_exists="replace", index=False)
+        log(f"{label} normalized SQLite written to {path}", 1)
+    finally:
+        conn.close()
+
+def normalize_side_for_export(path, header_row, sheet_name, label):
+    """
+    Normalize and forward-fill a single ICD export using the shared schema.
+    Returns (tables, report, flat_df).
+    """
+
+    log(f"Normalizing {label} ICD for export", 1)
     lf = read_data_lazy(path, header_row=header_row, sheet_name=sheet_name)
     df = lf.collect()
 
@@ -1492,7 +1510,7 @@ def export_normalized_side(path, header_row, sheet_name, output_path, label):
         column_mappings=None,
         fill_down=None,
         infer_fill_down=True,
-        clean_headers=True,  # align with shared schema cleaner
+        clean_headers=True,
         merge_with_defaults=True,
         return_flat=True,
     )
@@ -1501,7 +1519,87 @@ def export_normalized_side(path, header_row, sheet_name, output_path, label):
         + ", ".join(f"{k}={v}" for k, v in report.table_row_counts.items()),
         1,
     )
+    return tables, report, flat_df
+
+
+def export_normalized_side(path, header_row, sheet_name, output_path, label):
+    """
+    Normalize and forward-fill a single ICD export using the shared schema,
+    then write it to the requested location. Intended for feeding the browser.
+    """
+
+    tables, report, flat_df = normalize_side_for_export(path, header_row, sheet_name, label)
     _write_normalized_output(tables, flat_df, output_path, label)
+
+
+def _single_side_html(
+    path,
+    header_row,
+    sheet_name,
+    mapping_cols,
+    keys,
+    fill_down_cols,
+    output_path,
+    hierarchy_cols,
+    side_label,
+    preloaded_df=None,
+):
+    """
+    Render a browse-style HTML for a single ICD (no diffs) using the existing HTML template.
+    """
+
+    log(f"Rendering single-side HTML for {side_label}: {output_path}", 1)
+    if preloaded_df is not None:
+        df = preloaded_df
+    else:
+        lf = read_data_lazy(path, header_row=header_row, sheet_name=sheet_name)
+
+        # Forward fill if requested.
+        if fill_down_cols:
+            exprs = []
+            for c in fill_down_cols:
+                if c not in lf.columns:
+                    continue
+                exprs.append(
+                    pl.when(pl.col(c).cast(pl.String).str.strip_chars() == "")
+                    .then(None)
+                    .otherwise(pl.col(c))
+                    .forward_fill()
+                    .alias(c)
+                )
+            if exprs:
+                lf = lf.with_columns(exprs)
+
+        df = lf.collect()
+
+    # Restrict to mapped columns if provided, otherwise keep all.
+    display_cols = [c for c in mapping_cols.keys() if c in df.columns] or df.columns
+    df = df.select(display_cols)
+
+    df = df.with_columns(
+        [
+            pl.lit(True).alias("_in_left"),
+            pl.lit(False).alias("_in_right"),
+            pl.lit("same").alias("_merge"),
+            pl.lit("").alias("changed_columns"),
+        ]
+    )
+
+    # Use provided hierarchy or fall back to fill-down columns that are present.
+    if not hierarchy_cols:
+        hierarchy_cols = [c for c in fill_down_cols if c in df.columns]
+
+    write_html_report(
+        df,
+        output_path,
+        mapping_cols,
+        keys,
+        hierarchy_cols,
+        page_size=500,
+        row_cap=200000,
+        lazy=False,
+        lazy_group_level=1,
+    )
 
 def main():
     parser = argparse.ArgumentParser(description="CSV/Excel Diff Tool with Excel Output")
@@ -1519,6 +1617,14 @@ def main():
     parser.add_argument("--html-lazy-group-level", type=int, default=1, help="How many hierarchy levels define a lazy group (default: top level)")
     parser.add_argument("--export-normalized-left", help="Optional path to export the left ICD normalized/filled (xlsx/parquet/csv/dir)")
     parser.add_argument("--export-normalized-right", help="Optional path to export the right ICD normalized/filled (xlsx/parquet/csv/dir)")
+    parser.add_argument("--html-left", action="store_true", help="Also emit a browse-style HTML for the left ICD (no diffs). Uses the left filename + .html unless --html-left-out is set.")
+    parser.add_argument("--html-right", action="store_true", help="Also emit a browse-style HTML for the right ICD (no diffs). Uses the right filename + .html unless --html-right-out is set.")
+    parser.add_argument("--html-left-out", help="Override output path for left HTML browse file.")
+    parser.add_argument("--html-right-out", help="Override output path for right HTML browse file.")
+    parser.add_argument("--sqlite-left", action="store_true", help="Emit a normalized SQLite database for the left ICD (default name: left.sqlite unless --sqlite-left-out is set).")
+    parser.add_argument("--sqlite-right", action="store_true", help="Emit a normalized SQLite database for the right ICD (default name: right.sqlite unless --sqlite-right-out is set).")
+    parser.add_argument("--sqlite-left-out", help="Override output path for left SQLite DB.")
+    parser.add_argument("--sqlite-right-out", help="Override output path for right SQLite DB.")
     
     # Header Row Arguments
     parser.add_argument("--header-row", type=int, default=1, help="Header row for both files (default: 1)")
@@ -1586,20 +1692,101 @@ def main():
     log(f"Mapping read time: {t1-t0:.4f}s", 2)
 
     # Optional: export normalized/filled single-ICD views for Streamlit browser consumption.
-    if args.export_normalized_left:
+    left_norm = None
+    right_norm = None
+    if args.export_normalized_left or args.sqlite_left or args.html_left:
         try:
-            export_normalized_side(args.left, left_header, left_sheet, args.export_normalized_left, "Left")
+            left_norm = normalize_side_for_export(args.left, left_header, left_sheet, "Left")
+        except Exception as exc:
+            log(f"Failed to normalize Left ICD: {exc}", 1)
+            sys.exit(1)
+
+    if args.export_normalized_right or args.sqlite_right or args.html_right:
+        try:
+            right_norm = normalize_side_for_export(args.right, right_header, right_sheet, "Right")
+        except Exception as exc:
+            log(f"Failed to normalize Right ICD: {exc}", 1)
+            sys.exit(1)
+
+    if args.export_normalized_left and left_norm:
+        tables, _, flat_df = left_norm
+        try:
+            _write_normalized_output(tables, flat_df, args.export_normalized_left, "Left")
         except Exception as exc:
             log(f"Failed to export normalized Left ICD: {exc}", 1)
             sys.exit(1)
 
-    if args.export_normalized_right:
+    if args.export_normalized_right and right_norm:
+        tables, _, flat_df = right_norm
         try:
-            export_normalized_side(args.right, right_header, right_sheet, args.export_normalized_right, "Right")
+            _write_normalized_output(tables, flat_df, args.export_normalized_right, "Right")
         except Exception as exc:
             log(f"Failed to export normalized Right ICD: {exc}", 1)
             sys.exit(1)
-    
+
+    if args.sqlite_left and left_norm:
+        tables, _, flat_df = left_norm
+        left_sqlite_path = Path(args.sqlite_left_out) if args.sqlite_left_out else Path(args.left).with_suffix(".sqlite")
+        try:
+            write_sqlite_output(tables, flat_df, left_sqlite_path, "Left")
+        except Exception as exc:
+            log(f"Failed to write SQLite for Left ICD: {exc}", 1)
+            sys.exit(1)
+
+    if args.sqlite_right and right_norm:
+        tables, _, flat_df = right_norm
+        right_sqlite_path = Path(args.sqlite_right_out) if args.sqlite_right_out else Path(args.right).with_suffix(".sqlite")
+        try:
+            write_sqlite_output(tables, flat_df, right_sqlite_path, "Right")
+        except Exception as exc:
+            log(f"Failed to write SQLite for Right ICD: {exc}", 1)
+            sys.exit(1)
+
+    # Optional: single-side HTML browse outputs using the existing template.
+    def _canonical_keys_available(df):
+        keys_found = []
+        for schema in TABLE_SCHEMAS.values():
+            for k in schema.keys:
+                if k in df.columns and k not in keys_found:
+                    keys_found.append(k)
+        return keys_found
+
+    if args.html_left and left_norm:
+        _, _, flat_df = left_norm
+        left_html_path = Path(args.html_left_out) if args.html_left_out else Path(args.left).with_suffix(Path(args.left).suffix + ".html")
+        fill_down_left = [c for c in DEFAULT_FILL_DOWN_CANONICAL if c in flat_df.columns]
+        hierarchy_left = [c.strip() for c in args.hierarchy.split(",")] if args.hierarchy else fill_down_left
+        _single_side_html(
+            args.left,
+            left_header,
+            left_sheet,
+            {c: c for c in flat_df.columns},
+            _canonical_keys_available(flat_df),
+            fill_down_left,
+            left_html_path,
+            hierarchy_left,
+            "Left",
+            preloaded_df=flat_df,
+        )
+
+    if args.html_right and right_norm:
+        _, _, flat_df = right_norm
+        fill_down_right = [c for c in DEFAULT_FILL_DOWN_CANONICAL if c in flat_df.columns]
+        hierarchy_right = [c.strip() for c in args.hierarchy.split(",")] if args.hierarchy else fill_down_right
+        right_html_path = Path(args.html_right_out) if args.html_right_out else Path(args.right).with_suffix(Path(args.right).suffix + ".html")
+        _single_side_html(
+            args.right,
+            right_header,
+            right_sheet,
+            {c: c for c in flat_df.columns},
+            _canonical_keys_available(flat_df),
+            fill_down_right,
+            right_html_path,
+            hierarchy_right,
+            "Right",
+            preloaded_df=flat_df,
+        )
+
     # 4. Compute Diff
     t2 = time.time()
     df_diff = compute_diff(args.left, args.right, mapping_dict, keys, fill_down_cols=fill_down_cols, 

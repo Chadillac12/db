@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
 import polars as pl
 import streamlit as st
+
+# Ensure repo root is on sys.path so `icd_common` is importable when running
+# from the icd_browser directory.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from icd_data import (
     load_excel_to_polars,

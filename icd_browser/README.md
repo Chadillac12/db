@@ -6,7 +6,7 @@ A Streamlit app to explore an ARINC-629 / ICD-style export from a single flat Ex
 
 ```bash
 pip install -r icd_browser/requirements.txt
-streamlit run icd_browser/icd_streamlit_app.py
+PYTHONPATH=. streamlit run icd_browser/icd_streamlit_app.py
 ```
 
 - Provide a valid Excel path in the sidebar (default field) or upload a file via the uploader. The default path resolves to `sample_data/icd_flat_example.xlsx` relative to the repo root.

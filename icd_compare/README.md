@@ -34,7 +34,10 @@ PYTHONPATH=.. python csv_excel_diff.py \
   --out diff_results.xlsx \
   --html diff_report.html \
   --export-normalized-left artifacts/left_normalized.xlsx \
-  --export-normalized-right artifacts/right_normalized.xlsx
+  --export-normalized-right artifacts/right_normalized.xlsx \
+  --html-left --html-right \
+  --sqlite-left --sqlite-right
+  # optional: override outputs with --html-left-out/--html-right-out/--sqlite-left-out/--sqlite-right-out
 ```
 
 3) Browse either normalized ICD in Streamlit
@@ -57,6 +60,8 @@ streamlit run ../icd_browser/icd_streamlit_app.py
   - `.parquet`/`.pq`: single Parquet of the flat fill-down frame.
   - `.csv`: single CSV of the flat fill-down frame.
   - Directory path: per-table Parquet files + `flat_filled.parquet`.
+- `--html-left`, `--html-right`: Browse-only HTML per side (no diffs). Defaults to naming after the input file (e.g., `left.xlsx.html`).
+- `--sqlite-left`, `--sqlite-right`: Normalized SQLite DBs per side (tables + flat_filled). Defaults to `<input>.sqlite` unless overridden.
 
 ## Performance & limits
 
