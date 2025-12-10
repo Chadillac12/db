@@ -326,6 +326,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Disable Markdown export.",
     )
     parser.add_argument(
+        "--markdown-hierarchical",
+        action="store_true",
+        help="Organize Markdown export into section-based subfolders (top 3 section levels).",
+    )
+    parser.add_argument(
         "--create-lancedb",
         action="store_true",
         default=False,
@@ -734,7 +739,26 @@ def slugify(value: str) -> str:
     return value or "item"
 
 
-def build_anythingllm_markdown_row(row: pd.Series) -> str:
+def _resolve_section_number(row: pd.Series) -> str:
+    return (
+        _clean_str(row.get("Section_Number", ""))
+        or _clean_str(row.get("SRS_Section", ""))
+        or _clean_str(row.get("Section", ""))
+    )
+
+
+def _resolve_section_title(row: pd.Series, section_title_map: Dict[str, str]) -> str:
+    section_number = _resolve_section_number(row)
+    if section_number and section_number in section_title_map:
+        return section_title_map[section_number]
+    return (
+        _clean_str(row.get("Section_Title", ""))
+        or _clean_str(row.get("SRS_Title", ""))
+        or _clean_str(row.get("SectionTitle", ""))
+    )
+
+
+def build_anythingllm_markdown_row(row: pd.Series, section_title_map: Dict[str, str]) -> str:
     req_id = _clean_str(row.get("Req_ID", ""))
     doc_name = _clean_str(row.get("Doc_Name", ""))
     doc_type = _clean_str(row.get("Doc_Type", ""))
@@ -747,18 +771,9 @@ def build_anythingllm_markdown_row(row: pd.Series) -> str:
     requirement_text = _clean_str(row.get("Requirement_Text", ""))
     combined_text = _clean_str(row.get("Combined_Text", ""))
 
-    section_title = (
-        _clean_str(row.get("Section_Title", ""))
-        or _clean_str(row.get("SRS_Title", ""))
-        or _clean_str(row.get("SectionTitle", ""))
-    )
-    section_number = (
-        _clean_str(row.get("Section_Number", ""))
-        or _clean_str(row.get("SRS_Section", ""))
-        or _clean_str(row.get("Section", ""))
-    )
+    section_number = _resolve_section_number(row)
+    section_title = _resolve_section_title(row, section_title_map)
     section_type = _clean_str(row.get("Section_Type", ""))
-    requirement_type = _clean_str(row.get("Requirement_Type", ""))
     schema_version = _clean_str(row.get("Schema_Version", ""))
     section_inferred = bool(row.get("Section_Inferred", False))
 
@@ -775,7 +790,6 @@ def build_anythingllm_markdown_row(row: pd.Series) -> str:
     yaml_lines.append(f'Section: "{section_number}"')
     yaml_lines.append(f'Section_Title: "{section_title}"')
     yaml_lines.append(f'Section_Type: "{section_type}"')
-    yaml_lines.append(f'Requirement_Type: "{requirement_type}"')
     if schema_version:
         yaml_lines.append(f'Schema_Version: "{schema_version}"')
     yaml_lines.append(f'Section_Inferred: {str(section_inferred).lower()}')
@@ -802,6 +816,8 @@ def build_anythingllm_markdown_row(row: pd.Series) -> str:
         summary_bits.append(f"**Children:** {children}")
     if aliases:
         summary_bits.append(f"**Aliases:** {aliases}")
+    if requirement_type:
+        summary_bits.append(f"**Requirement Type:** {requirement_type}")
     if srs_local:
         summary_bits.append(f"**SRS Local Req No:** {srs_local}")
     if section_number:
@@ -836,21 +852,88 @@ def build_anythingllm_markdown_row(row: pd.Series) -> str:
     return "\n".join(yaml_lines + body_lines)
 
 
+def _compute_section_title_map(df: pd.DataFrame) -> Dict[str, str]:
+    """First observed title per section number."""
+    mapping: Dict[str, str] = {}
+    for _, row in df.iterrows():
+        section = _resolve_section_number(row)
+        title = (
+            _clean_str(row.get("Section_Title", ""))
+            or _clean_str(row.get("SRS_Title", ""))
+            or _clean_str(row.get("SectionTitle", ""))
+        )
+        if section and title and section not in mapping:
+            mapping[section] = title
+    return mapping
+
+
+def _build_section_prefix_title_map(df: pd.DataFrame, levels: int = 3) -> Dict[str, str]:
+    """First observed title per section prefix (e.g., 1, 1.2, 1.2.3)."""
+    mapping: Dict[str, str] = {}
+    for _, row in df.iterrows():
+        section = _resolve_section_number(row)
+        if not section:
+            continue
+        title = (
+            _clean_str(row.get("Section_Title", ""))
+            or _clean_str(row.get("SRS_Title", ""))
+            or _clean_str(row.get("SectionTitle", ""))
+        )
+        if not title:
+            continue
+        base = section.split("-")[0]
+        parts = [p for p in base.split(".") if p]
+        prefix = ""
+        for i, part in enumerate(parts):
+            if i >= levels:
+                break
+            prefix = f"{prefix}.{part}" if prefix else part
+            if prefix not in mapping:
+                mapping[prefix] = title
+    return mapping
+
+
+def _section_hierarchy_folders(section: str, prefix_title_map: Dict[str, str], levels: int = 3) -> List[str]:
+    """Split section like 1.2.3-0 into folder parts enriched with titles when available."""
+    if not section:
+        return []
+    base = section.split("-")[0]  # drop trailing -0 if present
+    parts = [p for p in base.split(".") if p]
+    folders: List[str] = []
+    prefix = ""
+    for i, part in enumerate(parts):
+        if i >= levels:
+            break
+        prefix = f"{prefix}.{part}" if prefix else part
+        title = prefix_title_map.get(prefix, "")
+        label = prefix.replace(".", "_")
+        folder_name = f"{label}_{slugify(title)}" if title else label
+        folders.append(folder_name)
+    return folders
+
+
 def export_anythingllm_markdown(
     df: pd.DataFrame,
     out_dir: Path,
+    hierarchical: bool = False,
 ) -> None:
     base = Path(out_dir)
     base.mkdir(parents=True, exist_ok=True)
 
     filename_registry: Dict[Path, Set[str]] = {}
     total_written = 0
+    section_title_map = _compute_section_title_map(df)
+    section_prefix_title_map = _build_section_prefix_title_map(df)
 
     for idx, row in df.iterrows():
         req_id = _clean_str(row.get("Req_ID", "")) or f"row_{idx + 1}"
         doc_name = _clean_str(row.get("Doc_Name", "")) or "UNKNOWN"
+        section_number = _resolve_section_number(row)
 
         folder = base / slugify(doc_name)
+        if hierarchical and section_number:
+            for part in _section_hierarchy_folders(section_number, section_prefix_title_map):
+                folder = folder / part
         folder.mkdir(parents=True, exist_ok=True)
 
         safe_stem = slugify(req_id) or f"req_{idx + 1}"
@@ -866,7 +949,7 @@ def export_anythingllm_markdown(
         filename = f"{candidate}.md"
         used_names.add(filename)
 
-        md_text = build_anythingllm_markdown_row(row)
+        md_text = build_anythingllm_markdown_row(row, section_title_map)
         (folder / filename).write_text(md_text, encoding="utf-8")
         total_written += 1
 
@@ -885,22 +968,15 @@ def export_rag_text(
 
     filename_registry: Dict[Path, Set[str]] = {}
     total_written = 0
+    section_title_map = _compute_section_title_map(df)
 
     for idx, row in df.iterrows():
         req_id = _clean_str(row.get("Req_ID", "")) or f"row_{idx + 1}"
         doc_name = _clean_str(row.get("Doc_Name", "")) or "UNKNOWN"
         doc_type = _clean_str(row.get("Doc_Type", ""))
         level = _clean_str(row.get("Level", ""))
-        section = (
-            _clean_str(row.get("Section_Number", ""))
-            or _clean_str(row.get("SRS_Section", ""))
-            or _clean_str(row.get("Section", ""))
-        )
-        section_title = (
-            _clean_str(row.get("Section_Title", ""))
-            or _clean_str(row.get("SRS_Title", ""))
-            or _clean_str(row.get("SectionTitle", ""))
-        )
+        section = _resolve_section_number(row)
+        section_title = _resolve_section_title(row, section_title_map)
         section_type = _clean_str(row.get("Section_Type", ""))
         requirement_type = _clean_str(row.get("Requirement_Type", ""))
         parents = _clean_str(row.get("Parent_Req_IDs", ""))
@@ -1759,7 +1835,11 @@ def main() -> None:
     create_sqlite_db(final_df, args.db_path, force_overwrite=args.force_overwrite)
 
     if args.create_markdown:
-        export_anythingllm_markdown(final_df, args.output_dir / ANYTHINGLLM_MD_EXPORT_DIR)
+        export_anythingllm_markdown(
+            final_df,
+            args.output_dir / ANYTHINGLLM_MD_EXPORT_DIR,
+            hierarchical=args.markdown_hierarchical,
+        )
 
     if args.create_rag:
         export_rag_text(final_df, args.output_dir / RAG_TEXT_EXPORT_DIR)
