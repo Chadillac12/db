@@ -46,6 +46,8 @@ RAG_TEXT_EXPORT_DIR = "for_rag"
 
 # Maximum length for generated Markdown filenames (without extension)
 MAX_MARKDOWN_FILENAME_LENGTH = 100
+# Maximum length for generated folder segments in hierarchical Markdown export
+MAX_FOLDER_NAME_LENGTH = 80
 
 # How many digits to pad numeric parts of IDs to (e.g., SSG-34 -> SSG-00034)
 ID_NUM_WIDTH = 5
@@ -908,6 +910,8 @@ def _section_hierarchy_folders(section: str, prefix_title_map: Dict[str, str], l
         title = prefix_title_map.get(prefix, "")
         label = prefix.replace(".", "_")
         folder_name = f"{label}_{slugify(title)}" if title else label
+        if len(folder_name) > MAX_FOLDER_NAME_LENGTH:
+            folder_name = folder_name[:MAX_FOLDER_NAME_LENGTH]
         folders.append(folder_name)
     return folders
 
