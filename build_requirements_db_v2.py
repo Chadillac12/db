@@ -383,9 +383,14 @@ def normalize_req_id(token: str) -> str:
 
 
 def split_raw_ids(raw: Any) -> List[str]:
-    if not isinstance(raw, str):
+    if raw is None:
         return []
-    if not raw.strip():
+    if isinstance(raw, float) and pd.isna(raw):
+        return []
+    if not isinstance(raw, str):
+        raw = str(raw)
+    raw = raw.strip()
+    if not raw:
         return []
     cleaned = raw.replace("\n", ",").replace(";", ",")
     parts = [p.strip() for p in cleaned.split(",")]
