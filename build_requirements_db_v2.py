@@ -338,6 +338,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Include the requirement text as the final YAML header entry in Markdown exports.",
     )
     parser.add_argument(
+        "--rejection-report",
+        type=Path,
+        help="Optional path to write a CSV of rows that were skipped/rejected with reasons.",
+    )
+    parser.add_argument(
         "--create-lancedb",
         action="store_true",
         default=False,
@@ -426,6 +431,43 @@ def extract_primary_and_aliases(raw: Any) -> Tuple[str, str]:
     primary = norm_tokens[0]
     aliases = norm_tokens[1:]
     return primary, join_ids(aliases)
+
+
+def _record_rejection(
+    bucket: Optional[List[Dict[str, Any]]],
+    doc_name: str,
+    doc_type: str,
+    level: str,
+    reason: str,
+    row: pd.Series,
+    row_index: Any = None,
+    id_cols: Iterable[str] = (),
+    object_number_col: str = "",
+) -> None:
+    if bucket is None:
+        return
+
+    raw_id = ""
+    for col in id_cols:
+        raw_id = str(row.get(col, "")).strip()
+        if raw_id:
+            break
+
+    object_number = str(row.get(object_number_col, "")).strip() if object_number_col else ""
+    section_number = str(row.get("Section_Number", "")).strip() if "Section_Number" in row else ""
+
+    bucket.append(
+        {
+            "Doc_Name": doc_name,
+            "Doc_Type": doc_type,
+            "Level": level,
+            "Reason": reason,
+            "Raw_Requirement_ID": raw_id,
+            "Object_Number": object_number,
+            "Section_Number": section_number,
+            "Row_Index": row_index,
+        }
+    )
 
 
 def collect_ids_from_series(series: pd.Series) -> List[str]:
@@ -1112,6 +1154,7 @@ def normalize_fcss(
     level: str,
     spec: DocSpec,
     input_entry: InputEntry,
+    rejections: Optional[List[Dict[str, Any]]] = None,
 ) -> pd.DataFrame:
     df = df.fillna("")
     total_rows = len(df)
@@ -1133,7 +1176,7 @@ def normalize_fcss(
         "missing_object_number": 0,
     }
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         is_header = update_section_context(
             row,
             section_state,
@@ -1200,11 +1243,33 @@ def normalize_fcss(
         rec_id = primary_id
         if not rec_id:
             stats["missing_requirement_id"] += 1
+            _record_rejection(
+                rejections,
+                doc_name,
+                doc_type,
+                level,
+                "missing_requirement_id",
+                row,
+                row_index=idx,
+                id_cols=(id_col,),
+                object_number_col=object_number_col,
+            )
             continue
 
         object_number = str(row.get(object_number_col, "")).strip()
         if not object_number:
             stats["missing_object_number"] += 1
+            _record_rejection(
+                rejections,
+                doc_name,
+                doc_type,
+                level,
+                "missing_object_number",
+                row,
+                row_index=idx,
+                id_cols=(id_col,),
+                object_number_col=object_number_col,
+            )
             continue
 
         # Text Columns
@@ -1300,6 +1365,7 @@ def normalize_generic_traceable(
     level: str,
     spec: DocSpec,
     input_entry: InputEntry,
+    rejections: Optional[List[Dict[str, Any]]] = None,
 ) -> pd.DataFrame:
     """Generic normalizer for CSRD, FCSRD, FSRD, etc. that rely heavily on trace columns."""
     df = df.fillna("")
@@ -1321,7 +1387,7 @@ def normalize_generic_traceable(
         "missing_object_number": 0,
     }
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         is_header = update_section_context(
             row,
             section_state,
@@ -1388,11 +1454,33 @@ def normalize_generic_traceable(
         rec_id = primary_id
         if not rec_id:
             stats["missing_requirement_id"] += 1
+            _record_rejection(
+                rejections,
+                doc_name,
+                doc_type,
+                level,
+                "missing_requirement_id",
+                row,
+                row_index=idx,
+                id_cols=(id_col,),
+                object_number_col=object_number_col,
+            )
             continue
 
         object_number = str(row.get(object_number_col, "")).strip()
         if not object_number:
             stats["missing_object_number"] += 1
+            _record_rejection(
+                rejections,
+                doc_name,
+                doc_type,
+                level,
+                "missing_object_number",
+                row,
+                row_index=idx,
+                id_cols=(id_col,),
+                object_number_col=object_number_col,
+            )
             continue
 
         # Text
@@ -1489,6 +1577,7 @@ def normalize_srs(
     level: str,
     spec: DocSpec,
     input_entry: InputEntry,
+    rejections: Optional[List[Dict[str, Any]]] = None,
 ) -> pd.DataFrame:
     df = df.fillna("")
     total_rows = len(df)
@@ -1617,6 +1706,7 @@ def normalize_ssg(
     level: str,
     spec: DocSpec,
     input_entry: InputEntry,
+    rejections: Optional[List[Dict[str, Any]]] = None,
 ) -> pd.DataFrame:
     df = df.fillna("")
     total_rows = len(df)
@@ -1630,11 +1720,22 @@ def normalize_ssg(
     id_col = spec.id_columns[0] if spec.id_columns else "ID"
     text_col = spec.text_columns[0] if spec.text_columns else "Systems/Software Guidelines (SSG)"
 
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         primary_id, aliases_str = extract_primary_and_aliases(row.get(id_col, ""))
         rec_id = primary_id
         if not rec_id:
             stats["missing_requirement_id"] += 1
+            _record_rejection(
+                rejections,
+                doc_name,
+                doc_type,
+                level,
+                "missing_requirement_id",
+                row,
+                row_index=idx,
+                id_cols=(id_col,),
+                object_number_col="Object Number",
+            )
             continue
 
         requirement_text = str(row.get(text_col, "")).strip()
@@ -1643,9 +1744,31 @@ def normalize_ssg(
         object_type = str(row.get("Object Type", "")).strip()
         if object_type and object_type.lower() in SSG_SKIP_OBJECT_TYPES:
             stats["filtered_object_type"] += 1
+            _record_rejection(
+                rejections,
+                doc_name,
+                doc_type,
+                level,
+                f"filtered_object_type:{object_type}",
+                row,
+                row_index=idx,
+                id_cols=(id_col,),
+                object_number_col="Object Number",
+            )
             continue
         if input_entry.skip_object_types and object_type.lower() in [t.lower() for t in input_entry.skip_object_types]:
             stats["filtered_object_type"] += 1
+            _record_rejection(
+                rejections,
+                doc_name,
+                doc_type,
+                level,
+                f"filtered_object_type:{object_type}",
+                row,
+                row_index=idx,
+                id_cols=(id_col,),
+                object_number_col="Object Number",
+            )
             continue
 
         lines: List[str] = [
@@ -1831,6 +1954,7 @@ def main() -> None:
         sys.exit(1)
 
     all_dfs: List[pd.DataFrame] = []
+    rejections: List[Dict[str, Any]] = []
 
     for entry in config.inputs:
         input_path = resolve_path(args.run_config.parent, entry.path)
@@ -1873,7 +1997,15 @@ def main() -> None:
             continue
 
         try:
-            df_norm = norm_func(df_raw, entry.doc_name, entry.doc_type, entry.level, spec, entry)
+            df_norm = norm_func(
+                df_raw,
+                entry.doc_name,
+                entry.doc_type,
+                entry.level,
+                spec,
+                entry,
+                rejections=rejections,
+            )
             # Add schema version for tracking
             df_norm["Schema_Version"] = config.schema.version
             all_dfs.append(df_norm)
@@ -1915,6 +2047,15 @@ def main() -> None:
     if args.create_lancedb:
         # Stub for LanceDB
         logging.info("LanceDB export requested but not fully implemented in this refactor.")
+
+    if args.rejection_report:
+        args.rejection_report.parent.mkdir(parents=True, exist_ok=True)
+        rej_df = pd.DataFrame.from_records(rejections)
+        rej_df.to_csv(args.rejection_report, index=False)
+        logging.info(
+            "Wrote rejection report",
+            extra={"path": str(args.rejection_report), "count": len(rejections)},
+        )
 
 
 if __name__ == "__main__":
