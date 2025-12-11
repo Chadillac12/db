@@ -333,6 +333,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Organize Markdown export into section-based subfolders (top 3 section levels).",
     )
     parser.add_argument(
+        "--markdown-include-req-text",
+        action="store_true",
+        help="Include the requirement text as the final YAML header entry in Markdown exports.",
+    )
+    parser.add_argument(
         "--create-lancedb",
         action="store_true",
         default=False,
@@ -518,6 +523,29 @@ def update_section_context(
 
     return is_section_header
 
+
+def _flag_header_requirement_types(df: pd.DataFrame) -> pd.DataFrame:
+    """Mark header-like rows with Requirement_Type='Header' unless explicitly 'Requirement'."""
+    if df.empty:
+        return df
+
+    req_col = "Requirement_Type"
+    if req_col not in df.columns:
+        df[req_col] = df.get("Requirement Type", "")
+
+    obj_series = df["Object_Number"] if "Object_Number" in df.columns else pd.Series("", index=df.index)
+    sec_series = df["Section_Number"] if "Section_Number" in df.columns else pd.Series("", index=df.index)
+
+    obj_clean = obj_series.fillna("").astype(str)
+    sec_clean = sec_series.fillna("").astype(str)
+    req_clean = df[req_col].fillna("").astype(str)
+
+    obj_header = obj_clean.str.len().gt(0) & ~obj_clean.str.contains("-", regex=False)
+    sec_header = sec_clean.str.len().gt(0) & ~sec_clean.str.contains("-", regex=False)
+    needs_header = (obj_header | sec_header) & (req_clean.str.strip().str.lower() != "requirement")
+
+    df.loc[needs_header, req_col] = "Header"
+    return df
 
 
 def maybe_update_section_title_from_row(row: pd.Series, state: Dict[str, str]) -> None:
@@ -760,7 +788,11 @@ def _resolve_section_title(row: pd.Series, section_title_map: Dict[str, str]) ->
     )
 
 
-def build_anythingllm_markdown_row(row: pd.Series, section_title_map: Dict[str, str]) -> str:
+def build_anythingllm_markdown_row(
+    row: pd.Series,
+    section_title_map: Dict[str, str],
+    include_req_text_in_yaml: bool = False,
+) -> str:
     req_id = _clean_str(row.get("Req_ID", ""))
     doc_name = _clean_str(row.get("Doc_Name", ""))
     doc_type = _clean_str(row.get("Doc_Type", ""))
@@ -773,7 +805,9 @@ def build_anythingllm_markdown_row(row: pd.Series, section_title_map: Dict[str, 
     requirement_text = _clean_str(row.get("Requirement_Text", ""))
     combined_text = _clean_str(row.get("Combined_Text", ""))
 
-    section_number = _resolve_section_number(row)
+    object_number = _clean_str(row.get("Object_Number", ""))
+    section_context_number = _resolve_section_number(row)
+    section_number = object_number or section_context_number
     section_title = _resolve_section_title(row, section_title_map)
     section_type = _clean_str(row.get("Section_Type", ""))
     schema_version = _clean_str(row.get("Schema_Version", ""))
@@ -795,6 +829,9 @@ def build_anythingllm_markdown_row(row: pd.Series, section_title_map: Dict[str, 
     if schema_version:
         yaml_lines.append(f'Schema_Version: "{schema_version}"')
     yaml_lines.append(f'Section_Inferred: {str(section_inferred).lower()}')
+    if include_req_text_in_yaml and requirement_text:
+        safe_req_text = requirement_text.replace('"', '\\"').replace("\n", "\\n")
+        yaml_lines.append(f'Requirement Text: \"{safe_req_text}\"')
     yaml_lines.append("---")
     yaml_lines.append("")
 
@@ -920,6 +957,7 @@ def export_anythingllm_markdown(
     df: pd.DataFrame,
     out_dir: Path,
     hierarchical: bool = False,
+    include_req_text_in_yaml: bool = False,
 ) -> None:
     base = Path(out_dir)
     base.mkdir(parents=True, exist_ok=True)
@@ -953,7 +991,11 @@ def export_anythingllm_markdown(
         filename = f"{candidate}.md"
         used_names.add(filename)
 
-        md_text = build_anythingllm_markdown_row(row, section_title_map)
+        md_text = build_anythingllm_markdown_row(
+            row,
+            section_title_map,
+            include_req_text_in_yaml=include_req_text_in_yaml,
+        )
         (folder / filename).write_text(md_text, encoding="utf-8")
         total_written += 1
 
@@ -1164,6 +1206,7 @@ def normalize_fcss(
             if val:
                 req_text_parts.append(val)
         requirement_text = " | ".join(req_text_parts)
+        requirement_type = _clean_str(row.get("Requirement_Type", row.get("Requirement Type", "")))
 
         # Trace
         parent_ids: List[str] = []
@@ -1206,6 +1249,11 @@ def normalize_fcss(
             lines.append(requirement_text)
 
         combined_text = "\n".join(lines)
+        section_type_value = (
+            section_state.get("type", "")
+            if requirement_type.lower() == "header"
+            else (requirement_type or section_state.get("type", ""))
+        )
 
         record: Dict[str, Any] = {
             "Req_ID": rec_id,
@@ -1220,7 +1268,7 @@ def normalize_fcss(
             "Combined_Text": combined_text,
             "Section_Title": section_state.get("title", ""),
             "Section_Number": section_state.get("number", ""),
-            "Section_Type": section_state.get("type", ""),
+            "Section_Type": section_type_value,
             "Is_Section_Header": False,  # Regular requirement, not a section header
         }
         
@@ -1346,6 +1394,7 @@ def normalize_generic_traceable(
             if val:
                 text_parts.append(val)
         requirement_text = " | ".join(text_parts)
+        requirement_type = _clean_str(row.get("Requirement_Type", row.get("Requirement Type", "")))
 
         # Trace
         parent_ids: List[str] = []
@@ -1389,6 +1438,11 @@ def normalize_generic_traceable(
             lines.append(requirement_text)
 
         combined_text = "\n".join(lines)
+        section_type_value = (
+            section_state.get("type", "")
+            if requirement_type.lower() == "header"
+            else (requirement_type or section_state.get("type", ""))
+        )
 
         record: Dict[str, Any] = {
             "Req_ID": rec_id,
@@ -1403,7 +1457,7 @@ def normalize_generic_traceable(
             "Combined_Text": combined_text,
             "Section_Title": section_state.get("title", ""),
             "Section_Number": section_state.get("number", ""),
-            "Section_Type": section_state.get("type", ""),
+            "Section_Type": section_type_value,
             "Is_Section_Header": False,  # Regular requirement, not a section header
         }
         
@@ -1824,6 +1878,7 @@ def main() -> None:
         return
 
     final_df = pd.concat(all_dfs, ignore_index=True)
+    final_df = _flag_header_requirement_types(final_df)
     
     # Exports
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1843,6 +1898,7 @@ def main() -> None:
             final_df,
             args.output_dir / ANYTHINGLLM_MD_EXPORT_DIR,
             hierarchical=args.markdown_hierarchical,
+            include_req_text_in_yaml=args.markdown_include_req_text,
         )
 
     if args.create_rag:
