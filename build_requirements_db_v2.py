@@ -540,9 +540,12 @@ def _flag_header_requirement_types(df: pd.DataFrame) -> pd.DataFrame:
     sec_clean = sec_series.fillna("").astype(str)
     req_clean = df[req_col].fillna("").astype(str)
 
-    obj_header = obj_clean.str.len().gt(0) & ~obj_clean.str.contains("-", regex=False)
+    obj_has_value = obj_clean.str.len().gt(0)
+    obj_header = obj_has_value & ~obj_clean.str.contains("-", regex=False)
     sec_header = sec_clean.str.len().gt(0) & ~sec_clean.str.contains("-", regex=False)
-    needs_header = (obj_header | sec_header) & (req_clean.str.strip().str.lower() != "requirement")
+    # Treat section_number as header only when object_number is missing
+    header_candidate = obj_header | (sec_header & ~obj_has_value)
+    needs_header = header_candidate & (req_clean.str.strip().str.lower() != "requirement")
 
     df.loc[needs_header, req_col] = "Header"
     return df
