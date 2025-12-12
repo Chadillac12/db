@@ -1046,7 +1046,21 @@ def export_anythingllm_markdown(
             section_title_map,
             include_req_text_in_yaml=include_req_text_in_yaml,
         )
-        (folder / filename).write_text(md_text, encoding="utf-8")
+        target_path = folder / filename
+        try:
+            target_path.write_text(md_text, encoding="utf-8")
+        except Exception as e:
+            # Fallback for path/filename issues (e.g., Windows MAX_PATH or invalid chars)
+            fallback_doc = (slugify(doc_name) or "doc")[:50]
+            fallback_req = (slugify(req_id) or f"req_{idx + 1}")[:80]
+            fallback_folder = base / fallback_doc
+            fallback_folder.mkdir(parents=True, exist_ok=True)
+            fallback_path = fallback_folder / f"{fallback_req}.md"
+            fallback_path.write_text(md_text, encoding="utf-8")
+            logging.warning(
+                "Markdown write failed; using fallback path",
+                extra={"req_id": req_id, "original": str(target_path), "fallback": str(fallback_path), "error": str(e)},
+            )
         total_written += 1
 
     logging.info(
