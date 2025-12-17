@@ -4,6 +4,7 @@ Rewrite overview (2025-11):
     * Introduced CLI/config-driven execution.
     * Added schema validation per document type.
     * Hardened outputs (Markdown + SQLite) and replaced prints with logging.
+    * New optional exports (section docs + neighbor markdown) live in separate folders and are off by default.
 """
 
 import argparse
@@ -42,6 +43,8 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 # Folder for per-requirement Markdown files for AnythingLLM / Obsidian
 ANYTHINGLLM_MD_EXPORT_DIR = "anythingllm_md_export"
+ANYTHINGLLM_MD_EXPORT_NEIGHBOR_DIR = "anythingllm_md_export_neighbors"
+ANYTHINGLLM_SECTION_EXPORT_DIR = "anythingllm_section_export"
 RAG_TEXT_EXPORT_DIR = "for_rag"
 
 # Maximum length for generated Markdown filenames (without extension)
@@ -51,6 +54,11 @@ MAX_FOLDER_NAME_LENGTH = 80
 
 # How many digits to pad numeric parts of IDs to (e.g., SSG-34 -> SSG-00034)
 ID_NUM_WIDTH = 5
+
+# New export flags (opt-in):
+# --create-section-docs writes section-level Markdown under anythingllm_section_export/<doc_name_slug>/
+# --create-neighbor-markdown writes neighbor-enriched requirement Markdown under anythingllm_md_export_neighbors/
+# Section grouping uses Doc_Name||Doc_Type||Section_Base_Number (portion before any dash).
 
 
 ########################
@@ -336,6 +344,33 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--markdown-include-req-text",
         action="store_true",
         help="Include the requirement text as the final YAML header entry in Markdown exports.",
+    )
+    parser.add_argument(
+        "--create-section-docs",
+        action="store_true",
+        help="Create section-level Markdown exports grouped by section anchor.",
+    )
+    parser.add_argument(
+        "--create-neighbor-markdown",
+        action="store_true",
+        help="Create neighbor-enriched requirement Markdown exports.",
+    )
+    parser.add_argument(
+        "--neighbors-prev",
+        type=int,
+        default=2,
+        help="Number of previous requirements to include in neighbor exports.",
+    )
+    parser.add_argument(
+        "--neighbors-next",
+        type=int,
+        default=2,
+        help="Number of next requirements to include in neighbor exports.",
+    )
+    parser.add_argument(
+        "--neighbors-include-trace-text",
+        action="store_true",
+        help="Include trace text snippets when available in neighbor exports.",
     )
     parser.add_argument(
         "--rejection-report",
@@ -819,6 +854,65 @@ def slugify(value: str) -> str:
     return value or "item"
 
 
+def section_base_number(section_number: str) -> str:
+    """Return the portion of a section number before any dash suffix."""
+    base = _clean_str(section_number)
+    if not base:
+        return ""
+    return base.split("-")[0].strip()
+
+
+def make_section_anchor(row: pd.Series) -> Tuple[str, str, str]:
+    """Return (doc_name, doc_type, section_base) for grouping adjacency."""
+    doc_name = _clean_str(row.get("Doc_Name", ""))
+    doc_type = _clean_str(row.get("Doc_Type", ""))
+    raw_section = _clean_str(row.get("Section_Number", "")) or _resolve_section_number(row)
+    base = section_base_number(raw_section)
+    return doc_name, doc_type, base
+
+
+def make_section_anchor_key(row: pd.Series) -> Optional[str]:
+    doc_name, doc_type, base = make_section_anchor(row)
+    if not base:
+        return None
+    return f"{doc_name}||{doc_type}||{base}"
+
+
+def split_section_anchor(anchor_key: str) -> Tuple[str, str, str]:
+    parts = anchor_key.split("||")
+    while len(parts) < 3:
+        parts.append("")
+    return parts[0], parts[1], parts[2]
+
+
+def _natural_sort_key(value: str) -> Tuple[Any, ...]:
+    if not value:
+        return ()
+    tokens = re.split(r"(\d+)", value)
+    key_parts: List[Any] = []
+    for tok in tokens:
+        if tok == "":
+            continue
+        if tok.isdigit():
+            key_parts.append(int(tok))
+        else:
+            key_parts.append(tok.lower())
+    return tuple(key_parts)
+
+
+def _row_sort_key(row: pd.Series, fallback_idx: int) -> Tuple[Any, ...]:
+    object_number = _clean_str(row.get("Object_Number", ""))
+    req_id = _clean_str(row.get("Req_ID", ""))
+    for candidate in (object_number, req_id):
+        if candidate:
+            return (_natural_sort_key(candidate), candidate.lower(), fallback_idx)
+    return ((), fallback_idx)
+
+
+def _single_line_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _resolve_section_number(row: pd.Series) -> str:
     return (
         _clean_str(row.get("Section_Number", ""))
@@ -982,6 +1076,76 @@ def _build_section_prefix_title_map(df: pd.DataFrame, levels: int = 3) -> Dict[s
     return mapping
 
 
+def _build_section_anchor_index(df: pd.DataFrame) -> Dict[str, List[int]]:
+    """Map section anchors to dataframe indices (preserves input ordering)."""
+    anchor_map: Dict[str, List[int]] = {}
+    for idx, row in df.iterrows():
+        anchor_key = make_section_anchor_key(row)
+        if not anchor_key:
+            continue
+        anchor_map.setdefault(anchor_key, []).append(idx)
+    return anchor_map
+
+
+def _build_reqid_index(df: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Map Req_ID to the first matching row."""
+    mapping: Dict[str, pd.Series] = {}
+    for _, row in df.iterrows():
+        req_id = _clean_str(row.get("Req_ID", ""))
+        if req_id and req_id not in mapping:
+            mapping[req_id] = row
+    return mapping
+
+
+def _schema_version_from_df(df: pd.DataFrame) -> str:
+    if "Schema_Version" not in df.columns:
+        return ""
+    for value in df["Schema_Version"]:
+        text = _clean_str(value)
+        if text:
+            return text
+    return ""
+
+
+def _resolve_section_title_for_rows(rows: Iterable[pd.Series], section_title_map: Dict[str, str]) -> str:
+    for row in rows:
+        maybe = _resolve_section_title(row, section_title_map)
+        if maybe:
+            return maybe
+    return ""
+
+
+def _gather_intro_snippets(rows: Iterable[pd.Series]) -> List[str]:
+    intro_fields = (
+        "Section_Intro",
+        "Section Intro",
+        "Section_Narrative",
+        "Section Narrative",
+        "Section_Description",
+        "Section Description",
+    )
+    snippets: List[str] = []
+    seen: Set[str] = set()
+    for row in rows:
+        for field in intro_fields:
+            if field in row.index:
+                val = _clean_str(row.get(field, ""))
+                if val and val not in seen:
+                    seen.add(val)
+                    snippets.append(val)
+                    break
+        combined_text = _clean_str(row.get("Combined_Text", ""))
+        if combined_text and combined_text not in seen:
+            seen.add(combined_text)
+            snippets.append(combined_text)
+    return snippets
+
+
+def _section_anchor_id(doc_name: str, doc_type: str, section_base: str) -> str:
+    raw = "__".join([part for part in (doc_name, doc_type, section_base) if part])
+    return slugify(raw) or "section"
+
+
 def _section_hierarchy_folders(section: str, prefix_title_map: Dict[str, str], levels: int = 3) -> List[str]:
     """Split section like 1.2.3-0 into folder parts enriched with titles when available."""
     if not section:
@@ -1065,6 +1229,449 @@ def export_anythingllm_markdown(
 
     logging.info(
         "Exported Markdown bundle",
+        extra={"count": total_written, "directory": str(base)},
+    )
+
+
+def export_section_documents(
+    df: pd.DataFrame,
+    out_dir: Path,
+    include_headers: bool = True,
+    include_requirements: bool = True,
+    include_intro: bool = True,
+    max_levels: int = 6,
+) -> None:
+    base = Path(out_dir)
+    base.mkdir(parents=True, exist_ok=True)
+
+    filename_registry: Dict[Path, Set[str]] = {}
+    total_written = 0
+    section_title_map = _compute_section_title_map(df)
+    schema_version = _schema_version_from_df(df)
+    anchor_map = _build_section_anchor_index(df)
+
+    for anchor_key, idx_list in anchor_map.items():
+        if not idx_list:
+            continue
+
+        doc_name, doc_type, section_base = split_section_anchor(anchor_key)
+        if not section_base:
+            continue
+
+        entries: List[Tuple[int, pd.Series]] = [(idx, df.loc[idx]) for idx in idx_list]
+        rows_only = [row for _, row in entries]
+
+        section_title = _resolve_section_title_for_rows(rows_only, section_title_map)
+        level_values = {_clean_str(row.get("Level", "")) for row in rows_only if _clean_str(row.get("Level", ""))}
+        level_value = ""
+        if len(level_values) == 1:
+            level_value = level_values.pop()
+        elif len(level_values) > 1:
+            level_value = "Mixed"
+
+        header_entries: List[Tuple[int, pd.Series]] = []
+        requirement_candidates: List[Tuple[int, pd.Series]] = []
+
+        for idx, row in entries:
+            is_header = bool(row.get("Is_Section_Header", False))
+            if is_header:
+                if include_headers:
+                    header_entries.append((idx, row))
+            else:
+                requirement_candidates.append((idx, row))
+
+        requirement_entries = requirement_candidates if include_requirements else []
+
+        sorted_headers = sorted(header_entries, key=lambda t: _row_sort_key(t[1], t[0]))
+        sorted_requirements = sorted(requirement_entries, key=lambda t: _row_sort_key(t[1], t[0]))
+        requirement_count = len(requirement_candidates)
+
+        if requirement_count > 300:
+            logging.warning(
+                "Large section encountered during section export",
+                extra={"anchor": anchor_key, "requirement_count": requirement_count},
+            )
+
+        section_anchor_id = _section_anchor_id(doc_name, doc_type, section_base)
+        section_slug = slugify(".".join(section_base.split(".")[:max_levels]) or section_base)
+        title_slug = slugify(section_title)
+        doc_slug = slugify(doc_name) or "doc"
+
+        filename_parts = [doc_slug, section_slug]
+        if title_slug:
+            filename_parts.append(title_slug)
+        filename_stem = "__".join([part for part in filename_parts if part]) or "section"
+        if len(filename_stem) > MAX_MARKDOWN_FILENAME_LENGTH:
+            filename_stem = filename_stem[:MAX_MARKDOWN_FILENAME_LENGTH]
+
+        folder = base / doc_slug
+        folder.mkdir(parents=True, exist_ok=True)
+        used_names = filename_registry.setdefault(folder, set())
+        candidate = filename_stem
+        counter = 1
+        while f"{candidate}.md" in used_names:
+            candidate = f"{filename_stem}-{counter}"
+            counter += 1
+        filename = f"{candidate}.md"
+        used_names.add(filename)
+
+        yaml_lines = ["---"]
+        yaml_lines.append(f'Doc_Name: "{doc_name}"')
+        yaml_lines.append(f'Doc_Type: "{doc_type}"')
+        if level_value:
+            yaml_lines.append(f'Level: "{level_value}"')
+        yaml_lines.append(f'Section_Number: "{section_base}"')
+        yaml_lines.append(f'Section_Title: "{section_title}"')
+        yaml_lines.append(f'Section_Anchor_ID: "{section_anchor_id}"')
+        yaml_lines.append(f'Requirement_Count: "{requirement_count}"')
+        if schema_version:
+            yaml_lines.append(f'Schema_Version: "{schema_version}"')
+        yaml_lines.append('Source: "section_export_v1"')
+        yaml_lines.append("---")
+
+        body_lines: List[str] = []
+        heading = f"# {doc_name} Section {section_base}  {section_title}".rstrip()
+        body_lines.append(heading)
+        body_lines.append("")
+
+        body_lines.append("## Section Details")
+        body_lines.append("")
+        body_lines.append(f"- Doc Type: {doc_type or 'Unknown'}")
+        if level_value:
+            body_lines.append(f"- Level: {level_value}")
+        body_lines.append(f"- Section Number: {section_base}")
+        if section_title:
+            body_lines.append(f"- Section Title: {section_title}")
+        body_lines.append(f"- Section Anchor ID: {section_anchor_id}")
+        body_lines.append(f"- Requirement Count: {requirement_count}")
+        if schema_version:
+            body_lines.append(f"- Schema Version: {schema_version}")
+        body_lines.append("- Source: section_export_v1")
+        body_lines.append("")
+
+        if include_intro:
+            intro_snippets = _gather_intro_snippets((row for _, row in entries))
+            if intro_snippets:
+                body_lines.append("## Section Intro")
+                body_lines.append("")
+                for snippet in intro_snippets:
+                    body_lines.append(f"- {_single_line_text(snippet)}")
+                body_lines.append("")
+
+        if sorted_headers and include_headers:
+            body_lines.append("## Section Headers")
+            body_lines.append("")
+            for _, header_row in sorted_headers:
+                header_number = _clean_str(header_row.get("Object_Number", "")) or section_base
+                header_title = _clean_str(header_row.get("Requirement_Text", "")) or _resolve_section_title(
+                    header_row, section_title_map
+                )
+                body_lines.append(f"- {header_number}: {_single_line_text(header_title)}")
+                combined_text = _clean_str(header_row.get("Combined_Text", ""))
+                if combined_text and combined_text != header_title:
+                    body_lines.append(f"  - Context: {_single_line_text(combined_text)}")
+            body_lines.append("")
+
+        body_lines.append("## Requirements in this Section")
+        body_lines.append("")
+        if sorted_requirements and include_requirements:
+            for _, req_row in sorted_requirements:
+                rid = _clean_str(req_row.get("Req_ID", ""))
+                rtext = _single_line_text(_clean_str(req_row.get("Requirement_Text", "")))
+                body_lines.append(f"- {rid}: {rtext}")
+        else:
+            body_lines.append("_No requirements captured for this section._")
+        body_lines.append("")
+
+        md_text = "\n".join(yaml_lines + body_lines)
+        target_path = folder / filename
+        try:
+            target_path.write_text(md_text, encoding="utf-8")
+        except Exception as e:
+            fallback_folder = base / doc_slug
+            fallback_folder.mkdir(parents=True, exist_ok=True)
+            fallback_name = f"{section_slug or 'section'}.md"
+            fallback_path = fallback_folder / fallback_name
+            fallback_path.write_text(md_text, encoding="utf-8")
+            logging.warning(
+                "Section Markdown write failed; using fallback path",
+                extra={
+                    "anchor": anchor_key,
+                    "original": str(target_path),
+                    "fallback": str(fallback_path),
+                    "error": str(e),
+                },
+            )
+        total_written += 1
+
+    logging.info(
+        "Exported section documents",
+        extra={"count": total_written, "directory": str(base)},
+    )
+
+
+def export_anythingllm_markdown_with_neighbors(
+    df: pd.DataFrame,
+    out_dir: Path,
+    k_prev: int = 2,
+    k_next: int = 2,
+    hierarchical: bool = False,
+    include_trace_text: bool = False,
+    include_req_text_in_yaml: bool = False,
+) -> None:
+    base = Path(out_dir)
+    base.mkdir(parents=True, exist_ok=True)
+
+    filename_registry: Dict[Path, Set[str]] = {}
+    total_written = 0
+    section_title_map = _compute_section_title_map(df)
+    section_prefix_title_map = _build_section_prefix_title_map(df)
+    reqid_index = _build_reqid_index(df)
+
+    # Build anchor ordering for neighbors (exclude headers and empty rows)
+    anchor_to_indices: Dict[str, List[int]] = {}
+    position_lookup: Dict[int, Tuple[str, int]] = {}
+    for idx, row in df.iterrows():
+        anchor_key = make_section_anchor_key(row)
+        if not anchor_key:
+            continue
+        if bool(row.get("Is_Section_Header", False)):
+            continue
+        req_id = _clean_str(row.get("Req_ID", ""))
+        req_text = _clean_str(row.get("Requirement_Text", ""))
+        if not req_id or not req_text:
+            continue
+        anchor_to_indices.setdefault(anchor_key, []).append(idx)
+
+    for anchor_key, idxs in anchor_to_indices.items():
+        sorted_idxs = sorted(idxs, key=lambda i: _row_sort_key(df.loc[i], i))
+        anchor_to_indices[anchor_key] = sorted_idxs
+        for pos, idx in enumerate(sorted_idxs):
+            position_lookup[idx] = (anchor_key, pos)
+
+    def neighbor_indices(current_idx: int) -> Tuple[List[int], List[int]]:
+        if current_idx not in position_lookup:
+            return [], []
+        anchor_key, pos = position_lookup[current_idx]
+        ordered = anchor_to_indices.get(anchor_key, [])
+        prev_indices: List[int] = []
+        next_indices: List[int] = []
+        for step in range(1, max(k_prev, 0) + 1):
+            prev_pos = pos - step
+            if prev_pos >= 0:
+                prev_indices.append(ordered[prev_pos])
+        for step in range(1, max(k_next, 0) + 1):
+            next_pos = pos + step
+            if next_pos < len(ordered):
+                next_indices.append(ordered[next_pos])
+        return prev_indices, next_indices
+
+    def build_trace_snippets(raw_ids: List[str]) -> List[str]:
+        snippets: List[str] = []
+        for rid in raw_ids:
+            snippet = rid
+            if include_trace_text:
+                row = reqid_index.get(rid)
+                if row is not None:
+                    text = _single_line_text(_clean_str(row.get("Requirement_Text", "")))
+                    if text:
+                        snippet = f"{rid}: {text}"
+            snippets.append(snippet)
+        return snippets
+
+    for idx, row in df.iterrows():
+        req_id = _clean_str(row.get("Req_ID", "")) or f"row_{idx + 1}"
+        doc_name = _clean_str(row.get("Doc_Name", "")) or "UNKNOWN"
+        doc_type = _clean_str(row.get("Doc_Type", ""))
+        level = _clean_str(row.get("Level", ""))
+        requirement_type = _clean_str(row.get("Requirement_Type", ""))
+        parents_raw = split_raw_ids(row.get("Parent_Req_IDs", ""))
+        children_raw = split_raw_ids(row.get("Child_Req_IDs", ""))
+        parents = join_ids(parents_raw)
+        children = join_ids(children_raw)
+        aliases = _clean_str(row.get("Aliases", ""))
+        srs_local = _clean_str(row.get("SRS_Local_Req_No", ""))
+        requirement_text = _clean_str(row.get("Requirement_Text", ""))
+        combined_text = _clean_str(row.get("Combined_Text", ""))
+
+        object_number = _clean_str(row.get("Object_Number", ""))
+        section_context_number = _resolve_section_number(row)
+        section_number = object_number or section_context_number
+        section_base = section_base_number(section_context_number)
+        section_title = _resolve_section_title(row, section_title_map)
+        section_type = _clean_str(row.get("Section_Type", ""))
+        schema_version = _clean_str(row.get("Schema_Version", ""))
+        section_anchor_id = _section_anchor_id(doc_name, doc_type, section_base) if section_base else ""
+        sort_key = f"{doc_type}|{section_base}|{object_number or req_id}"
+
+        prev_indices, next_indices = neighbor_indices(idx)
+        prev_neighbors: List[Tuple[str, str]] = []
+        next_neighbors: List[Tuple[str, str]] = []
+        for pidx in prev_indices:
+            prow = df.loc[pidx]
+            pid = _clean_str(prow.get("Req_ID", ""))
+            ptext = _single_line_text(_clean_str(prow.get("Requirement_Text", "")))
+            if pid:
+                prev_neighbors.append((pid, ptext))
+        for nidx in next_indices:
+            nrow = df.loc[nidx]
+            nid = _clean_str(nrow.get("Req_ID", ""))
+            ntext = _single_line_text(_clean_str(nrow.get("Requirement_Text", "")))
+            if nid:
+                next_neighbors.append((nid, ntext))
+
+        neighbors_prev_ids = ", ".join([nid for nid, _ in prev_neighbors])
+        neighbors_next_ids = ", ".join([nid for nid, _ in next_neighbors])
+
+        if req_id and not section_base:
+            assert not prev_neighbors and not next_neighbors, "Neighbors should be empty when section is missing"
+
+        folder = base / slugify(doc_name)
+        if hierarchical and section_context_number:
+            for part in _section_hierarchy_folders(section_context_number, section_prefix_title_map):
+                folder = folder / part
+        folder.mkdir(parents=True, exist_ok=True)
+
+        safe_stem = slugify(req_id) or f"req_{idx + 1}"
+        if len(safe_stem) > MAX_MARKDOWN_FILENAME_LENGTH:
+            safe_stem = safe_stem[:MAX_MARKDOWN_FILENAME_LENGTH]
+
+        used_names = filename_registry.setdefault(folder, set())
+        candidate = safe_stem
+        counter = 1
+        while f"{candidate}.md" in used_names:
+            candidate = f"{safe_stem}-{counter}"
+            counter += 1
+        filename = f"{candidate}.md"
+        used_names.add(filename)
+
+        yaml_lines = ["---"]
+        yaml_lines.append(f'Req_ID: "{req_id}"')
+        yaml_lines.append(f'Doc_Name: "{doc_name}"')
+        yaml_lines.append(f'Doc_Type: "{doc_type}"')
+        yaml_lines.append(f'Requirement_Type: "{requirement_type}"')
+        yaml_lines.append(f'Level: "{level}"')
+        yaml_lines.append(f'Parents: "{parents}"')
+        yaml_lines.append(f'Children: "{children}"')
+        yaml_lines.append(f'Aliases: "{aliases}"')
+        yaml_lines.append(f'SRS_Local_Req_No: "{srs_local}"')
+        yaml_lines.append(f'Section: "{section_number}"')
+        yaml_lines.append(f'Section_Title: "{section_title}"')
+        yaml_lines.append(f'Section_Type: "{section_type}"')
+        yaml_lines.append(f'Section_Anchor_ID: "{section_anchor_id}"')
+        yaml_lines.append(f'Sort_Key: "{sort_key}"')
+        yaml_lines.append(f'Neighbors_Prev: "{neighbors_prev_ids}"')
+        yaml_lines.append(f'Neighbors_Next: "{neighbors_next_ids}"')
+        if schema_version:
+            yaml_lines.append(f'Schema_Version: "{schema_version}"')
+        if include_req_text_in_yaml and requirement_text:
+            yaml_lines.append(f'Requirement_Text: "{requirement_text}"')
+        yaml_lines.append("---")
+
+        body_lines: List[str] = []
+        body_lines.append(f"# {req_id}")
+        body_lines.append("")
+
+        summary_bits = []
+        if doc_name:
+            summary_bits.append(f"**Doc Name:** {doc_name}")
+        if doc_type:
+            summary_bits.append(f"**Doc Type:** {doc_type}")
+        if level:
+            summary_bits.append(f"**Level:** {level}")
+        if section_number:
+            summary_bits.append(f"**Section:** {section_number}")
+        if section_title:
+            summary_bits.append(f"**Section Title:** {section_title}")
+        if section_anchor_id:
+            summary_bits.append(f"**Section Anchor ID:** {section_anchor_id}")
+        if section_type:
+            summary_bits.append(f"**Section Type:** {section_type}")
+        if requirement_type:
+            summary_bits.append(f"**Requirement Type:** {requirement_type}")
+        if parents:
+            summary_bits.append(f"**Parents:** {parents}")
+        if children:
+            summary_bits.append(f"**Children:** {children}")
+        if aliases:
+            summary_bits.append(f"**Aliases:** {aliases}")
+        if schema_version:
+            summary_bits.append(f"**Schema Version:** {schema_version}")
+
+        if summary_bits:
+            body_lines.append("  \n".join(summary_bits))
+            body_lines.append("")
+
+        if requirement_text:
+            body_lines.append("## Requirement Text")
+            body_lines.append("")
+            body_lines.append(requirement_text)
+            body_lines.append("")
+
+        body_lines.append("## Local Neighbors (same section)")
+        body_lines.append("")
+        if prev_neighbors or next_neighbors:
+            if prev_neighbors:
+                body_lines.append("**Previous:**")
+                for nid, ntext in prev_neighbors:
+                    body_lines.append(f"- {nid}: {ntext}")
+                body_lines.append("")
+            if next_neighbors:
+                body_lines.append("**Next:**")
+                for nid, ntext in next_neighbors:
+                    body_lines.append(f"- {nid}: {ntext}")
+                body_lines.append("")
+        else:
+            body_lines.append("_No neighboring requirements found in this section._")
+            body_lines.append("")
+
+        body_lines.append("## Trace Snippets")
+        body_lines.append("")
+        body_lines.append("**Parents:**")
+        parent_snippets = build_trace_snippets(parents_raw)
+        if parent_snippets:
+            for snippet in parent_snippets:
+                body_lines.append(f"- {snippet}")
+        else:
+            body_lines.append("- None")
+        body_lines.append("")
+
+        body_lines.append("**Children:**")
+        child_snippets = build_trace_snippets(children_raw)
+        if child_snippets:
+            for snippet in child_snippets:
+                body_lines.append(f"- {snippet}")
+        else:
+            body_lines.append("- None")
+        body_lines.append("")
+
+        if combined_text:
+            body_lines.append("---")
+            body_lines.append("")
+            body_lines.append("## Combined Context")
+            body_lines.append("")
+            body_lines.append(combined_text)
+            body_lines.append("")
+
+        md_text = "\n".join(yaml_lines + body_lines)
+        target_path = folder / filename
+        try:
+            target_path.write_text(md_text, encoding="utf-8")
+        except Exception as e:
+            fallback_doc = (slugify(doc_name) or "doc")[:50]
+            fallback_req = (slugify(req_id) or f"req_{idx + 1}")[:80]
+            fallback_folder = base / fallback_doc
+            fallback_folder.mkdir(parents=True, exist_ok=True)
+            fallback_path = fallback_folder / f"{fallback_req}.md"
+            fallback_path.write_text(md_text, encoding="utf-8")
+            logging.warning(
+                "Neighbor Markdown write failed; using fallback path",
+                extra={"req_id": req_id, "original": str(target_path), "fallback": str(fallback_path), "error": str(e)},
+            )
+        total_written += 1
+
+    logging.info(
+        "Exported neighbor Markdown bundle",
         extra={"count": total_written, "directory": str(base)},
     )
 
@@ -2052,6 +2659,23 @@ def main() -> None:
             final_df,
             args.output_dir / ANYTHINGLLM_MD_EXPORT_DIR,
             hierarchical=args.markdown_hierarchical,
+            include_req_text_in_yaml=args.markdown_include_req_text,
+        )
+
+    if args.create_section_docs:
+        export_section_documents(
+            final_df,
+            args.output_dir / ANYTHINGLLM_SECTION_EXPORT_DIR,
+        )
+
+    if args.create_neighbor_markdown:
+        export_anythingllm_markdown_with_neighbors(
+            final_df,
+            args.output_dir / ANYTHINGLLM_MD_EXPORT_NEIGHBOR_DIR,
+            k_prev=args.neighbors_prev,
+            k_next=args.neighbors_next,
+            hierarchical=args.markdown_hierarchical,
+            include_trace_text=args.neighbors_include_trace_text,
             include_req_text_in_yaml=args.markdown_include_req_text,
         )
 
