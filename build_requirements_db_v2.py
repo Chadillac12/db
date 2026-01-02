@@ -3006,9 +3006,28 @@ def main() -> None:
                 rag_block_root / slugify(clean_name),
                 str(doc_name),
             )
+            # Summarize block sizes (rough token proxy = words)
+            all_blocks: List[str] = []
+            for bucket_blocks in blocks_by_section.values():
+                all_blocks.extend(bucket_blocks)
+            word_counts = [len(b.split()) for b in all_blocks if b]
+            avg_tokens = sum(word_counts) / len(word_counts) if word_counts else 0
+            min_tokens = min(word_counts) if word_counts else 0
+            max_tokens = max(word_counts) if word_counts else 0
             logging.info(
                 "Exported merged section Markdown",
-                extra={"doc_name": str(doc_name), "file_count": len(paths)},
+                extra={
+                    "doc_name": str(doc_name),
+                    "file_count": len(paths),
+                    "block_count": len(all_blocks),
+                    "avg_tokens_per_block": round(avg_tokens, 2),
+                    "min_tokens_per_block": min_tokens,
+                    "max_tokens_per_block": max_tokens,
+                },
+            )
+            logging.info(
+                "Section files written",
+                extra={"paths": [str(p) for p in paths]},
             )
 
     if args.create_lancedb:
