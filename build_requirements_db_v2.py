@@ -46,11 +46,19 @@ ANYTHINGLLM_MD_EXPORT_DIR = "anythingllm_md_export"
 ANYTHINGLLM_MD_EXPORT_NEIGHBOR_DIR = "anythingllm_md_export_neighbors"
 ANYTHINGLLM_SECTION_EXPORT_DIR = "anythingllm_section_export"
 RAG_TEXT_EXPORT_DIR = "for_rag"
+ANYTHINGLLM_SECTION_BLOCK_EXPORT_DIR = "anythingllm_section_blocks"
 
 # Maximum length for generated Markdown filenames (without extension)
 MAX_MARKDOWN_FILENAME_LENGTH = 100
 # Maximum length for generated folder segments in hierarchical Markdown export
 MAX_FOLDER_NAME_LENGTH = 80
+
+# Maximum requirements per merged Markdown file for section-grouped export
+MAX_REQS_PER_FILE = 250
+# Maximum linked requirements injected for in/out links
+MAX_LINKS_PER_SIDE = 5
+# Maximum characters to keep from linked requirement text snippets
+MAX_LINK_TEXT_LENGTH = 300
 
 # How many digits to pad numeric parts of IDs to (e.g., SSG-34 -> SSG-00034)
 ID_NUM_WIDTH = 5
@@ -388,6 +396,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Create simplified For_RAG text exports alongside other artifacts.",
+    )
+    parser.add_argument(
+        "--create-rag-optimized",
+        action="store_true",
+        default=False,
+        help="Create merged section Markdown optimized for AnythingLLM embeddings.",
     )
     parser.add_argument(
         "--force-overwrite",
@@ -1095,6 +1109,298 @@ def _build_reqid_index(df: pd.DataFrame) -> Dict[str, pd.Series]:
         if req_id and req_id not in mapping:
             mapping[req_id] = row
     return mapping
+
+
+def _value_or_na(val: Any) -> str:
+    cleaned = _clean_str(val)
+    return cleaned if cleaned else "N/A"
+
+
+def _bool_from_value(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    text = _clean_str(val).lower()
+    return text in {"1", "true", "t", "yes", "y"}
+
+
+def _truncate_text(text: str, limit: int = MAX_LINK_TEXT_LENGTH) -> str:
+    if text == "N/A":
+        return text
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _resolve_field(row: pd.Series, *candidates: str) -> str:
+    for name in candidates:
+        if name in row.index:
+            val = _clean_str(row.get(name, ""))
+            if val:
+                return val
+    return ""
+
+
+def _extract_link_ids_from_field(raw: str) -> List[str]:
+    text = _clean_str(raw)
+    if not text or text.upper() == "N/A":
+        return []
+    ids: List[str] = []
+    seen: Set[str] = set()
+
+    explicit_pattern = re.compile(r"Primary\\?=\s*([A-Za-z]+-\d+[A-Za-z0-9]*)")
+    general_pattern = re.compile(r"([A-Za-z]+-\d+[A-Za-z0-9]*)")
+
+    for match in explicit_pattern.finditer(text):
+        nid = normalize_req_id(match.group(1))
+        if nid and nid not in seen:
+            seen.add(nid)
+            ids.append(nid)
+
+    for match in general_pattern.finditer(text):
+        nid = normalize_req_id(match.group(1))
+        if nid and nid not in seen:
+            seen.add(nid)
+            ids.append(nid)
+
+    return ids
+
+
+def extract_section_keys_from_object_number(obj_num: str) -> Dict[str, str]:
+    cleaned = _clean_str(obj_num).replace(" ", "")
+    if not cleaned:
+        return {"major": "N/A", "minor": "N/A", "raw": "N/A"}
+
+    dotted_match = re.search(r"\d+(?:\.\d+)+", cleaned)
+    single_match = re.search(r"\d+", cleaned) if not dotted_match else None
+
+    target = dotted_match.group(0) if dotted_match else (single_match.group(0) if single_match else "")
+    if not target:
+        return {"major": "N/A", "minor": "N/A", "raw": cleaned or "N/A"}
+
+    parts = [p for p in target.split(".") if p]
+    major = ".".join(parts[:2]) if len(parts) >= 2 else (target if target else "N/A")
+    minor = ".".join(parts[:3]) if len(parts) >= 3 else "N/A"
+
+    return {
+        "major": major or "N/A",
+        "minor": minor or "N/A",
+        "raw": cleaned or "N/A",
+    }
+
+
+def _linked_context_entries(
+    ids: Iterable[str],
+    req_index: Dict[str, pd.Series],
+    label: str,
+    section_title_map: Dict[str, str],
+) -> List[str]:
+    entries: List[str] = []
+    for rid in ids:
+        linked_row = req_index.get(rid)
+        if linked_row is not None:
+            linked_text = _value_or_na(linked_row.get("Requirement_Text", ""))
+            linked_doc = _value_or_na(linked_row.get("Doc_Name", ""))
+            linked_section = _resolve_section_title(linked_row, section_title_map)
+            linked_section = _value_or_na(linked_section)
+            snippet = _truncate_text(linked_text, MAX_LINK_TEXT_LENGTH)
+            entries.append(f"- [{label}] {rid} ({linked_doc}, {linked_section}): {snippet}")
+        else:
+            entries.append(f"- [{label}] {rid}: N/A")
+    return entries
+
+
+def build_rag_optimized_block(
+    row: pd.Series,
+    section_title_map: Dict[str, str],
+    req_index: Dict[str, pd.Series],
+) -> str:
+    req_id = _value_or_na(row.get("Req_ID", row.get("Requirement ID", "")))
+    doc_name = _value_or_na(row.get("Doc_Name", row.get("Document", "")))
+    req_type = _value_or_na(row.get("Requirement_Type", row.get("Requirement Type", "")))
+    safety = _value_or_na(_resolve_field(row, "Safety"))
+    object_number = _value_or_na(row.get("Object_Number", row.get("Object Number", "")) or _resolve_section_number(row))
+    section_title = _value_or_na(_resolve_section_title(row, section_title_map))
+
+    req_text_raw = _clean_str(row.get("Requirement_Text", row.get("Requirement Text", "")))
+    req_text = req_text_raw if req_text_raw else "N/A"
+
+    derived_raw = _resolve_field(row, "Derived Requirement", "Derived_Requirement", "Is_Derived")
+    is_derived = _bool_from_value(derived_raw)
+
+    rationale_raw = _resolve_field(row, "Rationale")
+    rationale = rationale_raw if rationale_raw else "N/A"
+    has_rationale = bool(rationale_raw)
+
+    design_note_raw = _resolve_field(row, "Design Implementation Note", "Design_Implementation_Note")
+    design_note = design_note_raw if design_note_raw else "N/A"
+
+    title_raw = _resolve_field(row, "OLE Title", "OLE_Title")
+    title = title_raw if title_raw else "N/A"
+
+    in_links_raw = _resolve_field(
+        row,
+        "In-links (Control System Requirements)",
+        "In-links_(Control_System_Requirements)",
+        "In_links_(Control_System_Requirements)",
+    )
+    out_links_raw = _resolve_field(
+        row,
+        "Out-links (All modules)",
+        "Out-links_(All_modules)",
+        "Out_links_(All_modules)",
+    )
+
+    in_link_ids = _extract_link_ids_from_field(in_links_raw)[:MAX_LINKS_PER_SIDE]
+    out_link_ids = _extract_link_ids_from_field(out_links_raw)[:MAX_LINKS_PER_SIDE]
+    inline_ref_ids = _extract_link_ids_from_field(req_text_raw)[:MAX_LINKS_PER_SIDE] if req_text_raw else []
+
+    req_statement_parts: List[str] = []
+    if req_text != "N/A":
+        req_statement_parts.append(req_text)
+    if req_text == "N/A" or len(req_text) < 100:
+        pad_bits: List[str] = []
+        for label, value in (
+            ("Doc_Name", doc_name),
+            ("Section_Title", section_title),
+            ("Object_Number", object_number),
+            ("Type", req_type),
+            ("Safety", safety),
+            ("Title", title),
+        ):
+            if value != "N/A":
+                pad_bits.append(f"{label}: {value}")
+        if pad_bits:
+            req_statement_parts.append("Additional context: " + "; ".join(pad_bits))
+        elif not req_statement_parts:
+            req_statement_parts.append("N/A")
+
+    if inline_ref_ids:
+        seen_inline: Set[str] = set()
+        inline_lines: List[str] = []
+        for rid in inline_ref_ids:
+            if rid in seen_inline:
+                continue
+            seen_inline.add(rid)
+            linked_row = req_index.get(rid)
+            linked_text = _value_or_na(linked_row.get("Requirement_Text", "")) if linked_row is not None else "N/A"
+            snippet = _truncate_text(linked_text, MAX_LINK_TEXT_LENGTH)
+            inline_lines.append(f"Referenced {rid}: {snippet}")
+        if inline_lines:
+            req_statement_parts.extend(inline_lines)
+
+    requirement_statement = "\n".join(req_statement_parts) if req_statement_parts else "N/A"
+
+    engineering_lines: List[str] = []
+    for label, value in (
+        ("Document", doc_name),
+        ("Section_Title", section_title),
+        ("Design_Note", design_note),
+        ("Rationale", rationale),
+        ("OLE_Title", title),
+    ):
+        engineering_lines.append(f"{label}: {value if value else 'N/A'}")
+
+    in_links_line = ", ".join(in_link_ids) if in_link_ids else "N/A"
+    out_links_line = ", ".join(out_link_ids) if out_link_ids else "N/A"
+
+    linked_context_lines: List[str] = []
+    linked_context_lines.extend(_linked_context_entries(in_link_ids, req_index, "in", section_title_map))
+    linked_context_lines.extend(_linked_context_entries(out_link_ids, req_index, "out", section_title_map))
+
+    for rid in inline_ref_ids:
+        if rid in in_link_ids or rid in out_link_ids:
+            continue
+        linked_context_lines.extend(_linked_context_entries([rid], req_index, "text", section_title_map))
+
+    if not linked_context_lines:
+        linked_context_lines.append("- N/A")
+
+    header = f"## {req_id}: {section_title}" if section_title != "N/A" else f"## {req_id}"
+
+    lines: List[str] = [
+        header,
+        f"Req_ID: {req_id}",
+        f"Type: {req_type}",
+        f"Safety: {safety}",
+        f"Object_Number: {object_number}",
+        f"Has_Rationale: {str(has_rationale).lower()}",
+        f"Is_Derived: {str(is_derived).lower()}",
+        "",
+        "### Requirement Statement",
+        requirement_statement if requirement_statement else "N/A",
+        "",
+        "### Engineering Context",
+        "\n".join(engineering_lines) if engineering_lines else "N/A",
+        "",
+        "### Traceability",
+        f"In-links: {in_links_line or 'N/A'}",
+        f"Out-links: {out_links_line or 'N/A'}",
+        "",
+        "#### Linked Requirement Context (Injected)",
+        "\n".join(linked_context_lines),
+    ]
+
+    return "\n".join(lines).strip()
+
+
+def group_blocks_by_section(
+    rows: Iterable[pd.Series],
+    req_index: Dict[str, pd.Series],
+    section_title_map: Dict[str, str],
+) -> Dict[str, List[str]]:
+    grouped: Dict[str, List[Tuple[str, str]]] = {}
+    for row in rows:
+        block = build_rag_optimized_block(row, section_title_map, req_index)
+        object_number = row.get("Object_Number", row.get("Object Number", ""))
+        section_keys = extract_section_keys_from_object_number(object_number)
+        major = section_keys["major"]
+        minor = section_keys["minor"]
+        grouped.setdefault(major, []).append((minor, block))
+
+    buckets: Dict[str, List[str]] = {}
+    for major_key, entries in grouped.items():
+        if len(entries) <= MAX_REQS_PER_FILE:
+            buckets[major_key] = [blk for _, blk in entries]
+            continue
+
+        minor_map: Dict[str, List[str]] = {}
+        for minor_key, blk in entries:
+            target_minor = minor_key if minor_key != "N/A" else major_key
+            minor_map.setdefault(target_minor, []).append(blk)
+
+        for minor_key, minor_blocks in minor_map.items():
+            if len(minor_blocks) <= MAX_REQS_PER_FILE:
+                buckets[minor_key] = minor_blocks
+            else:
+                for idx in range(0, len(minor_blocks), MAX_REQS_PER_FILE):
+                    part_key = f"{minor_key}__part{idx // MAX_REQS_PER_FILE + 1:02d}"
+                    buckets[part_key] = minor_blocks[idx : idx + MAX_REQS_PER_FILE]
+
+    return buckets
+
+
+def write_merged_section_files(
+    blocks_by_section: Dict[str, List[str]],
+    output_dir: Path,
+    doc_name: str,
+) -> List[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    doc_slug = slugify(doc_name) or "doc"
+    written: List[Path] = []
+
+    for bucket_key in sorted(blocks_by_section.keys(), key=_natural_sort_key):
+        blocks = blocks_by_section[bucket_key]
+        if not blocks:
+            continue
+        body = "\n\n---\n\n".join(blocks).strip()
+        if body:
+            body += "\n"
+        filename = f"{doc_slug}__{slugify(bucket_key)}.md"
+        target = output_dir / filename
+        target.write_text(body, encoding="utf-8")
+        written.append(target)
+
+    return written
 
 
 def _schema_version_from_df(df: pd.DataFrame) -> str:
@@ -2681,6 +2987,29 @@ def main() -> None:
 
     if args.create_rag:
         export_rag_text(final_df, args.output_dir / RAG_TEXT_EXPORT_DIR)
+
+    if args.create_rag_optimized:
+        section_title_map = _compute_section_title_map(final_df)
+        req_index = _build_reqid_index(final_df)
+        rag_block_root = args.output_dir / ANYTHINGLLM_SECTION_BLOCK_EXPORT_DIR
+
+        for doc_name in final_df["Doc_Name"].dropna().unique():
+            clean_name = _clean_str(doc_name) or "doc"
+            doc_rows = final_df[final_df["Doc_Name"] == doc_name]
+            blocks_by_section = group_blocks_by_section(
+                (row for _, row in doc_rows.iterrows()),
+                req_index,
+                section_title_map,
+            )
+            paths = write_merged_section_files(
+                blocks_by_section,
+                rag_block_root / slugify(clean_name),
+                str(doc_name),
+            )
+            logging.info(
+                "Exported merged section Markdown",
+                extra={"doc_name": str(doc_name), "file_count": len(paths)},
+            )
 
     if args.create_lancedb:
         # Stub for LanceDB
