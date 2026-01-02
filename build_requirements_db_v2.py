@@ -19,6 +19,10 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 import pandas as pd
 import yaml  # Required dependency now
+try:
+    import tiktoken
+except ImportError:  # Optional; tokenizer counts fall back to word counts
+    tiktoken = None
 
 # Optional (only needed if CREATE_LANCEDB_TABLE = True and you installed these):
 # from sentence_transformers import SentenceTransformer
@@ -59,6 +63,8 @@ MAX_REQS_PER_FILE = 250
 MAX_LINKS_PER_SIDE = 5
 # Maximum characters to keep from linked requirement text snippets
 MAX_LINK_TEXT_LENGTH = 300
+# Tokenizer label for summaries (if available)
+TIKTOKEN_ENCODING_NAME = "cl100k_base"
 
 # How many digits to pad numeric parts of IDs to (e.g., SSG-34 -> SSG-00034)
 ID_NUM_WIDTH = 5
@@ -1207,6 +1213,125 @@ def _linked_context_entries(
         else:
             entries.append(f"- [{label}] {rid}: N/A")
     return entries
+
+
+def _percentile(data: Sequence[int], q: float) -> float:
+    if not data:
+        return 0.0
+    if q <= 0:
+        return float(min(data))
+    if q >= 100:
+        return float(max(data))
+    sorted_vals = sorted(data)
+    k = (len(sorted_vals) - 1) * (q / 100.0)
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    if f == c:
+        return float(sorted_vals[int(k)])
+    d0 = sorted_vals[f] * (c - k)
+    d1 = sorted_vals[c] * (k - f)
+    return float(d0 + d1)
+
+
+_TIKTOKEN_ENCODER = None
+
+
+def _token_count(text: str) -> Tuple[int, str]:
+    global _TIKTOKEN_ENCODER
+    if not text:
+        return 0, ""
+    if tiktoken is None:
+        return len(text.split()), "word-count (tiktoken not installed)"
+    if _TIKTOKEN_ENCODER is None:
+        try:
+            _TIKTOKEN_ENCODER = tiktoken.get_encoding(TIKTOKEN_ENCODING_NAME)
+        except Exception:
+            return len(text.split()), "word-count (tiktoken unavailable)"
+    try:
+        return len(_TIKTOKEN_ENCODER.encode(text)), f"{TIKTOKEN_ENCODING_NAME} (tiktoken)"
+    except Exception:
+        return len(text.split()), "word-count (tiktoken encode failed)"
+
+
+def write_rag_summary_markdown(
+    doc_name: str,
+    doc_slug: str,
+    blocks_by_section: Dict[str, List[str]],
+    word_counts: List[int],
+    token_counts: List[int],
+    tokenizer_label: str,
+    output_dir: Path,
+    written_paths: List[Path],
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    file_path = output_dir / f"{doc_slug}__summary.md"
+
+    total_blocks = len(word_counts)
+    total_files = len(written_paths)
+    total_sections = len(blocks_by_section)
+
+    avg_tokens = sum(word_counts) / total_blocks if total_blocks else 0
+    min_tokens = min(word_counts) if word_counts else 0
+    max_tokens = max(word_counts) if word_counts else 0
+    p50 = _percentile(word_counts, 50)
+    p90 = _percentile(word_counts, 90)
+    p95 = _percentile(word_counts, 95)
+
+    tok_avg = sum(token_counts) / len(token_counts) if token_counts else 0
+    tok_min = min(token_counts) if token_counts else 0
+    tok_max = max(token_counts) if token_counts else 0
+    tok_p50 = _percentile(token_counts, 50)
+    tok_p90 = _percentile(token_counts, 90)
+    tok_p95 = _percentile(token_counts, 95)
+
+    largest_sections = sorted(
+        [(k, len(v)) for k, v in blocks_by_section.items()],
+        key=lambda kv: kv[1],
+        reverse=True,
+    )[:5]
+
+    lines: List[str] = []
+    lines.append(f"# AnythingLLM Section Merge Summary — {doc_name}")
+    lines.append("")
+    lines.append("## High-level Metrics")
+    lines.append(f"- Files written: {total_files}")
+    lines.append(f"- Section buckets: {total_sections}")
+    lines.append(f"- Requirement blocks: {total_blocks}")
+    lines.append("")
+    lines.append("## Block Size (word-count proxy for tokens)")
+    lines.append(f"- Avg: {avg_tokens:.2f}")
+    lines.append(f"- Min: {min_tokens}")
+    lines.append(f"- P50: {p50:.2f}")
+    lines.append(f"- P90: {p90:.2f}")
+    lines.append(f"- P95: {p95:.2f}")
+    lines.append(f"- Max: {max_tokens}")
+    lines.append("- Suggested chunk size: aim near P90/P95 to reduce splits in embedding.")
+    lines.append("")
+    lines.append(f"## Block Size (tokenizer: {tokenizer_label})")
+    lines.append(f"- Avg: {tok_avg:.2f}")
+    lines.append(f"- Min: {tok_min}")
+    lines.append(f"- P50: {tok_p50:.2f}")
+    lines.append(f"- P90: {tok_p90:.2f}")
+    lines.append(f"- P95: {tok_p95:.2f}")
+    lines.append(f"- Max: {tok_max}")
+    lines.append("")
+    lines.append("## Largest Buckets (by block count)")
+    if largest_sections:
+        for key, count in largest_sections:
+            lines.append(f"- {key}: {count} blocks")
+    else:
+        lines.append("- N/A")
+    lines.append("")
+    lines.append("## Files")
+    if written_paths:
+        for p in written_paths:
+            lines.append(f"- {p.name}")
+    else:
+        lines.append("- N/A")
+    lines.append("")
+
+    file_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return file_path
 
 
 def build_rag_optimized_block(
@@ -3011,9 +3136,23 @@ def main() -> None:
             for bucket_blocks in blocks_by_section.values():
                 all_blocks.extend(bucket_blocks)
             word_counts = [len(b.split()) for b in all_blocks if b]
+            token_counts_with_label = [_token_count(b) for b in all_blocks if b]
+            token_counts = [t for t, _ in token_counts_with_label]
+            tokenizer_labels = {lbl for _, lbl in token_counts_with_label if lbl}
+            tokenizer_label = next(iter(tokenizer_labels)) if tokenizer_labels else "word-count (fallback)"
             avg_tokens = sum(word_counts) / len(word_counts) if word_counts else 0
             min_tokens = min(word_counts) if word_counts else 0
             max_tokens = max(word_counts) if word_counts else 0
+            summary_path = write_rag_summary_markdown(
+                str(doc_name),
+                slugify(clean_name),
+                blocks_by_section,
+                word_counts,
+                token_counts,
+                tokenizer_label,
+                rag_block_root / slugify(clean_name),
+                paths,
+            )
             logging.info(
                 "Exported merged section Markdown",
                 extra={
@@ -3023,6 +3162,7 @@ def main() -> None:
                     "avg_tokens_per_block": round(avg_tokens, 2),
                     "min_tokens_per_block": min_tokens,
                     "max_tokens_per_block": max_tokens,
+                    "summary": str(summary_path),
                 },
             )
             logging.info(
