@@ -228,9 +228,9 @@ def build_docling_cmd(
     cmd += ["--debug-visualize-layout" if debug_layout else "--no-debug-visualize-layout"]
     cmd += ["--debug-visualize-tables" if debug_tables else "--no-debug-visualize-tables"]
 
-    # Verbosity
+    # Verbosity (pass through verbatim)
     if verbose > 0:
-        cmd += ["-" + "v" * min(verbose, 2)]  # -v or -vv
+        cmd += ["-" + "v" * verbose]
 
     # SECURITY / LOCAL-ONLY:
     # DO NOT add: --enable-remote-services
