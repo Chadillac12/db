@@ -26,6 +26,20 @@ pip install docling pdf2image pytesseract pillow  # OCR
 - `OCR_ENABLED`, `OCR_METHOD` (`auto`|`docling`|`tesseract`)
 - `MODEL_DENYLIST_ENABLED`, `MODEL_DENYLIST_SUBSTRINGS` (comma list like `qwen,baai,bge`)
 
+### Recommended local preset (one command)
+Bootstrap a .env with recommended local models:
+```powershell
+python scripts/bootstrap_env.py  # add --force to overwrite an existing .env
+```
+Preset values:
+- `CHAT_MODEL=gpt-20b` (good general-purpose 20B local model for long-context answers)
+- `EMBED_MODEL=avr/sfr-embedding-mistral:q8_0` (compact quantized embedder with solid semantic recall)
+- `RERANKER_MODE=crossencoder` with `RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2` (fast, lightweight reranker to refine top hits)
+- Retrieval defaults: `TOP_N=100`, `TOP_K=15`
+- OCR remains disabled by default (`OCR_ENABLED=false`)
+
+Why these choices: they balance quality and local resource use—20B chat for answer fidelity, a quantized Mistral embedder for speed/footprint, and a small CrossEncoder for rerank so multi-part or mixed-document questions surface the best chunks without heavy GPU demand.
+
 ### Metadata terminology / schema
 - Every chunk stores JSON-safe metadata such as: `source_path`, `file_name`, `file_ext`, `doc_type`, `doc_name`, `doc_level`, `section_id`, `req_id`, `object_number`, `heading_path`, `chunk_index`, `start_char`, `end_char`, `doc_sha256`, `chunk_sha256`, `page_number`, `ocr_used`, `ocr_method`, `tags`, `ingest_timestamp_utc`.
 - Markdown frontmatter can set `doc_name`, `doc_level`, `tags`, or any extra fields; these propagate to all derived chunks.
