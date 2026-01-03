@@ -1,0 +1,9 @@
+requests
+python-dotenv
+chromadb
+streamlit
+pypdf
+python-docx
+pyyaml
+sentence-transformers
+torch
