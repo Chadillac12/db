@@ -32,6 +32,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Dict, Iterable, List, Optional, Tuple
 
 # Best-effort extension filter; docling will still validate.
@@ -62,6 +63,7 @@ class JobResult:
     json_path: Optional[Path] = None
     used_force_ocr: bool = False
     used_vlm: bool = False
+    duration_sec: float = 0.0
 
 
 def run_cmd(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
@@ -78,6 +80,13 @@ def safe_read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return ""
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{s:02d}"
 
 
 def is_output_low_quality(md_text: str, min_alpha: int, min_total: int) -> bool:
@@ -271,6 +280,7 @@ def convert_one(
     ocr_retry_engine: str,
 ) -> JobResult:
 
+    t0 = time.time()
     out_dir = compute_output_subdir(out_root, in_root, src)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -333,6 +343,28 @@ def convert_one(
         used_vlm = True
         md1, js1 = md3 or md1, js3 or js1
 
+    # Validate required outputs exist for requested formats
+    missing_outputs: List[str] = []
+    if "md" in to_formats and not (md1 and md1.exists()):
+        missing_outputs.append("md")
+    if "json" in to_formats and not (js1 and js1.exists()):
+        missing_outputs.append("json")
+
+    duration = time.time() - t0
+
+    if missing_outputs:
+        return JobResult(
+            src=src,
+            ok=False,
+            reason=f"missing outputs: {', '.join(missing_outputs)}",
+            out_dir=out_dir,
+            md_path=md1,
+            json_path=js1,
+            used_force_ocr=used_force,
+            used_vlm=used_vlm,
+            duration_sec=duration,
+        )
+
     return JobResult(
         src=src,
         ok=True,
@@ -342,6 +374,7 @@ def convert_one(
         json_path=js1,
         used_force_ocr=used_force,
         used_vlm=used_vlm,
+        duration_sec=duration,
     )
 
 
@@ -469,6 +502,9 @@ def main() -> int:
 
     results: List[JobResult] = []
 
+    total_jobs = len(worklist)
+    start_time = time.time()
+
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
         futs = []
         for src in worklist:
@@ -502,16 +538,37 @@ def main() -> int:
                 ocr_retry_engine=args.ocr_retry_engine,
             ))
 
+        completed = 0
         for f in as_completed(futs):
-            results.append(f.result())
+            result = f.result()
+            results.append(result)
+            completed += 1
+            elapsed = time.time() - start_time
+            rate = completed / elapsed if elapsed > 0 else 0
+            remaining = total_jobs - completed
+            eta_seconds = remaining / rate if rate > 0 else 0
+            status_line = (
+                f"[{completed}/{total_jobs}] "
+                f"elapsed={format_duration(elapsed)} "
+                f"eta={format_duration(eta_seconds)} "
+                f"src={result.src.name} "
+                f"{'OK' if result.ok else 'FAIL'}"
+            )
+            print(status_line, file=sys.stderr)
 
     ok = [r for r in results if r.ok]
     bad = [r for r in results if not r.ok]
     force_count = sum(1 for r in ok if r.used_force_ocr)
     vlm_count = sum(1 for r in ok if r.used_vlm)
+    durations = [r.duration_sec for r in results if r.duration_sec > 0]
+    avg_duration = sum(durations) / len(durations) if durations else 0
+    min_duration = min(durations) if durations else 0
+    max_duration = max(durations) if durations else 0
 
     print(f"\nDone. Total: {len(results)}  OK: {len(ok)}  Failed: {len(bad)}")
     print(f"Force-OCR retries: {force_count}  VLM fallbacks: {vlm_count}")
+    if durations:
+        print(f"Durations (sec): avg={avg_duration:.1f}  min={min_duration:.1f}  max={max_duration:.1f}")
 
     if bad:
         print("\nFailures:")
