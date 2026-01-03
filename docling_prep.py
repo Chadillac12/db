@@ -29,6 +29,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -505,6 +506,34 @@ def main() -> int:
     total_jobs = len(worklist)
     start_time = time.time()
 
+    # Early status output so the user sees activity before first file completes
+    print(
+        f"Starting {total_jobs} file(s) | workers={max(1, args.workers)} | threads/doc={args.docling_threads} "
+        f"| device={args.device} | pipeline={args.pipeline} | vlm_fallback={args.vlm_fallback}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    # Heartbeat thread to emit periodic status before first completion
+    heartbeat_stop = threading.Event()
+    progress_state = {"completed": 0}
+
+    def heartbeat() -> None:
+        while not heartbeat_stop.wait(10):
+            completed = progress_state["completed"]
+            elapsed = time.time() - start_time
+            rate = completed / elapsed if elapsed > 0 else 0
+            remaining = total_jobs - completed
+            eta_seconds = remaining / rate if rate > 0 else 0
+            print(
+                f"[heartbeat] [{completed}/{total_jobs}] elapsed={format_duration(elapsed)} eta={format_duration(eta_seconds)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    hb_thread = threading.Thread(target=heartbeat, daemon=True)
+    hb_thread.start()
+
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
         futs = []
         for src in worklist:
@@ -543,6 +572,7 @@ def main() -> int:
             result = f.result()
             results.append(result)
             completed += 1
+            progress_state["completed"] = completed
             elapsed = time.time() - start_time
             rate = completed / elapsed if elapsed > 0 else 0
             remaining = total_jobs - completed
@@ -555,6 +585,9 @@ def main() -> int:
                 f"{'OK' if result.ok else 'FAIL'}"
             )
             print(status_line, file=sys.stderr)
+
+    heartbeat_stop.set()
+    hb_thread.join(timeout=1)
 
     ok = [r for r in results if r.ok]
     bad = [r for r in results if not r.ok]
