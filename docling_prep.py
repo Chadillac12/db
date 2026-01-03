@@ -67,7 +67,11 @@ class JobResult:
     duration_sec: float = 0.0
 
 
-def run_cmd(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+def run_cmd(cmd: List[str], cwd: Optional[Path] = None, stream: bool = False) -> Tuple[int, str, str]:
+    if stream:
+        # Stream to parent stdout/stderr
+        p = subprocess.run(cmd, text=True, shell=False, cwd=str(cwd) if cwd else None)
+        return p.returncode, "", ""
     p = subprocess.run(cmd, capture_output=True, text=True, shell=False, cwd=str(cwd) if cwd else None)
     return p.returncode, p.stdout, p.stderr
 
@@ -309,7 +313,7 @@ def convert_one(
             debug_tables=debug_tables,
             verbose=verbose,
         )
-        rc, out, err = run_cmd(cmd)
+        rc, out, err = run_cmd(cmd, stream=(verbose > 0))
         md_path = find_output_file(out_dir, src, ".md") if "md" in to_formats else None
         json_path = find_output_file(out_dir, src, ".json") if "json" in to_formats else None
         return rc, out, err, md_path, json_path
